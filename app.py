@@ -14,154 +14,216 @@ from visualization import (
     plot_piano_roll
 )
 
+# Convert MIDI notes to JSON events for browser playback
+def notes_to_json_events(notes, tempo=500000):
+    """Convert MIDI notes to JSON format for Tone.js playback"""
+    import mido
+
+    events = []
+    for note in notes:
+        # Convert tick time to seconds
+        time_seconds = mido.tick2second(note["tick"], 480, tempo)  # Assume 480 ticks per beat
+        duration_seconds = mido.tick2second(note["duration"], 480, tempo)
+
+        # Convert MIDI note number to note name (C4, D#4, etc.)
+        note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+        octave = (note["pitch"] // 12) - 1
+        note_name = note_names[note["pitch"] % 12]
+        full_note_name = f"{note_name}{octave}"
+
+        events.append({
+            "time": time_seconds,
+            "duration": duration_seconds,
+            "note": full_note_name,
+            "velocity": note["velocity"] / 127.0  # Normalize to 0-1
+        })
+
+    return json.dumps(events)
+
 # Custom component for browser-based MIDI synthesis using Tone.js
-def midi_player_component(midi_data_b64, label="Play MIDI"):
+def midi_player_component(notes_a, notes_b=None, label="Play MIDI"):
     """Professional MIDI player using Tone.js and Streamlit components"""
 
-    # Create data URL for the MIDI file
-    midi_data_url = f"data:audio/midi;base64,{midi_data_b64}"
+    # Convert notes to JSON for browser
+    events_a_json = notes_to_json_events(notes_a)
+
+    if notes_b:
+        events_b_json = notes_to_json_events(notes_b)
+        # For mixed playback, combine both note sets
+        all_notes = notes_a + notes_b
+        # Adjust timing so they start at the same time
+        events_mixed_json = notes_to_json_events(all_notes)
+    else:
+        events_b_json = "[]"
+        events_mixed_json = events_a_json
 
     # HTML component using Tone.js
     html_code = f"""
-    <div style="margin: 10px 0;">
-        <button id="play-btn" style="
-            background: #4CAF50;
-            border: none;
-            color: white;
-            padding: 10px 20px;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
-            font-size: 16px;
-            margin: 4px 2px;
-            cursor: pointer;
-            border-radius: 4px;
-        ">{label}</button>
-        <div id="status" style="margin-top: 5px; font-size: 14px;"></div>
+    <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 8px; background: #f9f9f9;">
+        <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+            <button id="play-a-btn" style="
+                background: #4CAF50;
+                border: none;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+            ">Play {label}</button>
+            {"<button id='play-b-btn' style='background: #2196F3; border: none; color: white; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px;'>Play Segment B</button>" if notes_b else ""}
+            {"<button id='play-mixed-btn' style='background: #FF9800; border: none; color: white; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px;'>Play Mixed</button>" if notes_b else ""}
+            <button id="stop-btn" style="
+                background: #f44336;
+                border: none;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+                display: none;
+            ">Stop</button>
+        </div>
+        <div id="status" style="font-size: 14px; color: #666;"></div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <script>
     (function() {{
-        const playBtn = document.getElementById('play-btn');
+        const playABtn = document.getElementById('play-a-btn');
+        const playBBtn = document.getElementById('play-b-btn');
+        const playMixedBtn = document.getElementById('play-mixed-btn');
+        const stopBtn = document.getElementById('stop-btn');
         const statusDiv = document.getElementById('status');
-        const midiUrl = "{midi_data_url}";
 
-        let isPlaying = false;
+        // Note events from Python
+        const eventsA = {events_a_json};
+        const eventsB = {events_b_json};
+        const eventsMixed = {events_mixed_json};
+
         let synth = null;
-        let midiPart = null;
+        let partA = null;
+        let partB = null;
+        let partMixed = null;
+        let isPlaying = false;
 
-        function updateStatus(message, color = 'black') {{
+        function updateStatus(message, color = '#666') {{
             statusDiv.textContent = message;
             statusDiv.style.color = color;
-            console.log('MIDI Player:', message);
+            console.log('Audio Player:', message);
         }}
 
-        playBtn.addEventListener('click', async function() {{
-            if (isPlaying) {{
-                stopPlayback();
-                return;
+        // Initialize synth
+        function initSynth() {{
+            if (!synth) {{
+                synth = new Tone.PolySynth(Tone.Synth, {{
+                    oscillator: {{ type: 'sawtooth' }},
+                    envelope: {{
+                        attack: 0.01,
+                        decay: 0.1,
+                        sustain: 0.3,
+                        release: 0.2
+                    }}
+                }}).toDestination();
+                console.log('Synth initialized');
             }}
+        }}
 
+        // Play specific events
+        async function playEvents(events, partRef, label) {{
             try {{
-                updateStatus('Starting audio...');
+                updateStatus(`Starting ${label.toLowerCase()}...`);
 
-                // Start Tone.js audio context
+                // Start audio context if needed
                 if (Tone.context.state !== 'running') {{
                     await Tone.start();
                 }}
 
-                updateStatus('Loading MIDI...');
+                initSynth();
 
-                // Create synth if not exists
-                if (!synth) {{
-                    synth = new Tone.PolySynth(Tone.Synth, {{
-                        oscillator: {{ type: 'sawtooth' }},
-                        envelope: {{
-                            attack: 0.01,
-                            decay: 0.1,
-                            sustain: 0.3,
-                            release: 0.2
-                        }}
-                    }}).toDestination();
+                // Dispose existing part
+                if (partRef) {{
+                    partRef.dispose();
                 }}
 
-                // Fetch and parse MIDI
-                const response = await fetch(midiUrl);
-                const midiArrayBuffer = await response.arrayBuffer();
-
-                // Use Tone.js MIDI converter
-                const midi = new Tone.Midi(midiArrayBuffer);
-
-                updateStatus('Preparing playback...');
-
-                // Create note events
-                const notes = [];
-                midi.tracks.forEach(track => {{
-                    track.notes.forEach(note => {{
-                        notes.push({{
-                            time: note.time,
-                            note: note.name, // Tone.js uses note names like 'C4'
-                            duration: note.duration,
-                            velocity: note.velocity
-                        }});
-                    }});
-                }});
-
-                if (notes.length === 0) {{
-                    throw new Error('No notes found in MIDI file');
-                }}
-
-                updateStatus('Playing...');
-
-                // Create and start part
-                midiPart = new Tone.Part((time, note) => {{
+                // Create new part
+                partRef = new Tone.Part((time, note) => {{
                     synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
-                }}, notes).start(0);
+                }}, events).start(0);
 
-                // Start Tone.js transport
+                updateStatus(`Playing ${label.toLowerCase()}...`);
+
+                // Start transport
                 Tone.Transport.start();
 
                 isPlaying = true;
-                playBtn.textContent = "Stop";
-                playBtn.style.background = "#f44336";
+                showStopButton();
 
-                // Stop after playback
-                const totalDuration = Math.max(...notes.map(n => n.time + n.duration)) + 0.5;
+                // Auto-stop after playback
+                const duration = Math.max(...events.map(e => e.time + e.duration)) + 0.5;
                 Tone.Transport.schedule(() => {{
                     stopPlayback();
-                }}, totalDuration);
+                }}, duration);
 
             }} catch (error) {{
-                console.error('Playback error:', error);
-                updateStatus('Error: ' + error.message, 'red');
+                console.error(`Error playing ${label.toLowerCase()}:`, error);
+                updateStatus(`Error: ${error.message}`, 'red');
             }}
-        }});
+        }}
+
+        // Button event listeners
+        playABtn.addEventListener('click', () => playEvents(eventsA, partA, 'Segment A'));
+        if (playBBtn) {{
+            playBBtn.addEventListener('click', () => playEvents(eventsB, partB, 'Segment B'));
+        }}
+        if (playMixedBtn) {{
+            playMixedBtn.addEventListener('click', () => playEvents(eventsMixed, partMixed, 'Mixed'));
+        }}
+
+        stopBtn.addEventListener('click', stopPlayback);
+
+        function showStopButton() {{
+            [playABtn, playBBtn, playMixedBtn].forEach(btn => {{
+                if (btn) btn.style.display = 'none';
+            }});
+            stopBtn.style.display = 'inline-block';
+        }}
+
+        function showPlayButtons() {{
+            [playABtn, playBBtn, playMixedBtn].forEach(btn => {{
+                if (btn) btn.style.display = 'inline-block';
+            }});
+            stopBtn.style.display = 'none';
+        }}
 
         function stopPlayback() {{
-            if (midiPart) {{
-                midiPart.dispose();
-                midiPart = null;
-            }}
             Tone.Transport.stop();
             Tone.Transport.cancel();
 
+            // Dispose parts
+            [partA, partB, partMixed].forEach(part => {{
+                if (part) {{
+                    part.dispose();
+                    part = null;
+                }}
+            }});
+
             isPlaying = false;
-            playBtn.textContent = "{label}";
-            playBtn.style.background = "#4CAF50";
+            showPlayButtons();
             updateStatus('Stopped');
         }}
 
-        // Cleanup on page unload
+        // Cleanup
         window.addEventListener('beforeunload', () => {{
+            stopPlayback();
             if (synth) synth.dispose();
-            if (midiPart) midiPart.dispose();
         }});
+
+        console.log('Audio player initialized with', eventsA.length, 'A notes', eventsB.length, 'B notes');
     }})();
     </script>
     """
 
-    components.html(html_code, height=80)
+    components.html(html_code, height=120)
 
 
 # ================================================================
@@ -405,18 +467,15 @@ if uploaded_file:
                             st.plotly_chart(plot_piano_roll(notes_b, auditor.ticks_per_beat, auditor._tempo, "Segment B"), use_container_width=True)
 
                         # Browser-based MIDI audio preview
-                        midi_a_b64 = base64.b64encode(auditor.export_segment_as_midi(notes_a)).decode()
-                        midi_b_b64 = base64.b64encode(auditor.export_segment_as_midi(notes_b)).decode()
-
                         col_audio1, col_audio2 = st.columns(2)
 
                         with col_audio1:
                             st.markdown("**🎵 Segment A Audio Preview**")
-                            midi_player_component(midi_a_b64, "Play Segment A")
+                            midi_player_component(notes_a, notes_b, "Segment A")
 
                         with col_audio2:
                             st.markdown("**🎵 Segment B Audio Preview**")
-                            midi_player_component(midi_b_b64, "Play Segment B")
+                            midi_player_component(notes_b, notes_a, "Segment B")
 
                         # Downloads
                         col_dl1, col_dl2 = st.columns(2)
