@@ -1,3 +1,9 @@
+# Top-level Audix declaration
+from streamlit_advanced_audio import audix
+
+# Declare once
+audix_player = audix
+
 import streamlit as st
 import io
 import os
@@ -13,7 +19,7 @@ from visualization import (
     plot_piano_roll
 )
 
-from streamlit_advanced_audio import audix
+
 
 # Top-level session state initialization - MUST be at the very top before any components
 if 'audio_cache' not in st.session_state:
@@ -156,10 +162,9 @@ def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
     return render_segment_audio(mixed_notes, ticks_per_beat, tempo)
 
 
-
+# Audio Player Component
 def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_beat=480, tempo=500000, match_id=None):
-    """Read-only audio player component that only displays pre-cached audio."""
-    # Layout columns if Segment B exists
+    """Read-only audio player displaying pre-cached audio with unique keys."""
     col1, col2 = st.columns(2) if notes_b else (st.container(), None)
 
     # Segment A
@@ -168,12 +173,12 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
         if notes_a:
             cache_key_a = f"a_{match_id}_{hash(str(notes_a) + str(ticks_per_beat) + str(tempo))}"
             cached_data_a = st.session_state.audio_cache.get(cache_key_a, {})
-            wav_bytes_a = cached_data_a.get('audio_bytes')
-            duration_a = cached_data_a.get('duration', 0.1)
+            wav_bytes_a = cached_data_a.get("audio_bytes")
+            duration_a = cached_data_a.get("duration", 0.1)
 
             if wav_bytes_a:
                 with st.container():
-                    audix(f"audio_player_a_{match_id}", wav_bytes_a, sample_rate=44100)
+                    audix_player(wav_bytes_a, key=f"audio_player_a_{match_id}", sample_rate=44100)
                     st.caption(f"Duration: {duration_a:.1f}s")
             else:
                 st.info(f"Duration: {duration_a:.1f}s | No audio data generated.")
@@ -187,12 +192,12 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
             if notes_b:
                 cache_key_b = f"b_{match_id}_{hash(str(notes_b) + str(ticks_per_beat) + str(tempo))}"
                 cached_data_b = st.session_state.audio_cache.get(cache_key_b, {})
-                wav_bytes_b = cached_data_b.get('audio_bytes')
-                duration_b = cached_data_b.get('duration', 0.1)
+                wav_bytes_b = cached_data_b.get("audio_bytes")
+                duration_b = cached_data_b.get("duration", 0.1)
 
                 if wav_bytes_b:
                     with st.container():
-                        audix(f"audio_player_b_{match_id}", wav_bytes_b, sample_rate=44100)
+                        audix_player(wav_bytes_b, key=f"audio_player_b_{match_id}", sample_rate=44100)
                         st.caption(f"Duration: {duration_b:.1f}s")
                 else:
                     st.info(f"Duration: {duration_b:.1f}s | No audio data generated.")
@@ -206,12 +211,12 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
         if mixed_notes:
             cache_key_mixed = f"mixed_{match_id}_{hash(str(mixed_notes) + str(ticks_per_beat) + str(tempo))}"
             cached_data_mixed = st.session_state.audio_cache.get(cache_key_mixed, {})
-            wav_bytes_mixed = cached_data_mixed.get('audio_bytes')
-            duration_mixed = cached_data_mixed.get('duration', 0.1)
+            wav_bytes_mixed = cached_data_mixed.get("audio_bytes")
+            duration_mixed = cached_data_mixed.get("duration", 0.1)
 
             if wav_bytes_mixed:
                 with st.container():
-                    audix(f"audio_player_mixed_{match_id}", wav_bytes_mixed, sample_rate=44100)
+                    audix_player(wav_bytes_mixed, key=f"audio_player_mixed_{match_id}", sample_rate=44100)
                     st.caption(f"Duration: {duration_mixed:.1f}s")
             else:
                 st.info(f"Duration: {duration_mixed:.1f}s | No audio data generated.")
