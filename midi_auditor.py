@@ -6,11 +6,18 @@ import functools
 import hashlib
 import platform
 
-# Audio synthesis temporarily disabled due to Python 3.13 compatibility issues
+# Audio synthesis now handled server-side in Python
 
 import mido
 import numpy as np
 from collections import defaultdict
+
+# Audio rendering dependencies
+import pretty_midi
+import soundfile as sf
+import io
+import hashlib
+import os
 
 from models import Match, LargeMatch, TimeSignature
 from suffix_automaton import SuffixAutomaton
@@ -667,6 +674,44 @@ class MIDIAuditor:
         # Write to buffer
         buffer = io.BytesIO()
         mid.save(file=buffer)
+        buffer.seek(0)
+        return buffer.getvalue()
+
+    def render_segment_as_wav(self, notes):
+        """Render notes as WAV audio bytes using pretty_midi and soundfile"""
+        if not notes:
+            # Return empty WAV data
+            return b''
+
+        # Create pretty_midi object
+        pm = pretty_midi.PrettyMIDI(resolution=self.ticks_per_beat)
+
+        # Create instrument (default piano)
+        instrument = pretty_midi.Instrument(program=0)
+
+        # Convert notes to pretty_midi format
+        for note in notes:
+            # Convert tick time to seconds
+            start_time = mido.tick2second(note["tick"], self.ticks_per_beat, self._tempo)
+            end_time = mido.tick2second(note["tick"] + note["duration"], self.ticks_per_beat, self._tempo)
+
+            # Create pretty_midi note
+            pm_note = pretty_midi.Note(
+                velocity=int(note["velocity"]),
+                pitch=int(note["pitch"]),
+                start=start_time,
+                end=end_time
+            )
+            instrument.notes.append(pm_note)
+
+        pm.instruments.append(instrument)
+
+        # Synthesize audio
+        audio_data = pm.synthesize(fs=44100)
+
+        # Write to WAV buffer
+        buffer = io.BytesIO()
+        sf.write(buffer, audio_data, 44100, format='WAV')
         buffer.seek(0)
         return buffer.getvalue()
 

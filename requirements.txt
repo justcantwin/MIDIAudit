@@ -3,3 +3,6 @@ numpy==1.26.4
 plotly==6.5.0
 streamlit==1.40.1
 setuptools>=65.0.0
+pretty_midi>=0.2.9
+soundfile>=0.10.0
+streamlit-advanced-audio>=1.0.0
