@@ -15,6 +15,10 @@ from visualization import (
 
 from streamlit_advanced_audio import audix
 
+# Top-level session state initialization - MUST be at the very top before any components
+if 'audio_cache' not in st.session_state:
+    st.session_state.audio_cache = {}
+
 # Safe session state initialization for audio cache
 def init_audio_cache():
     """Initialize audio cache in session state safely."""
@@ -23,6 +27,7 @@ def init_audio_cache():
 
 def initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches):
     """Pre-generate and cache all audio during initialization phase."""
+    # Ensure session state exists
     if 'audio_cache' not in st.session_state:
         st.session_state.audio_cache = {}
 
@@ -33,21 +38,56 @@ def initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches):
         cache_key_a = f"a_{lm.id}_{hash(str(notes_a) + str(auditor.ticks_per_beat) + str(auditor._tempo))}"
         if cache_key_a not in st.session_state.audio_cache:
             wav_bytes_a = render_segment_audio(notes_a, auditor.ticks_per_beat, auditor._tempo)
-            st.session_state.audio_cache[cache_key_a] = wav_bytes_a
+            # Calculate duration from audio bytes
+            duration_a = calculate_audio_duration(wav_bytes_a)
+            # Store both audio and duration in cache
+            st.session_state.audio_cache[cache_key_a] = {
+                'audio_bytes': wav_bytes_a,
+                'duration': duration_a
+            }
 
         # Segment B
         notes_b = auditor.notes_in_bar_range(lm.start_bar_b, lm.length_bars)
         cache_key_b = f"b_{lm.id}_{hash(str(notes_b) + str(auditor.ticks_per_beat) + str(auditor._tempo))}"
         if cache_key_b not in st.session_state.audio_cache:
             wav_bytes_b = render_segment_audio(notes_b, auditor.ticks_per_beat, auditor._tempo)
-            st.session_state.audio_cache[cache_key_b] = wav_bytes_b
+            # Calculate duration from audio bytes
+            duration_b = calculate_audio_duration(wav_bytes_b)
+            # Store both audio and duration in cache
+            st.session_state.audio_cache[cache_key_b] = {
+                'audio_bytes': wav_bytes_b,
+                'duration': duration_b
+            }
 
         # Mixed
         mixed_notes = (notes_a or []) + (notes_b or [])
         cache_key_mixed = f"mixed_{lm.id}_{hash(str(mixed_notes) + str(auditor.ticks_per_beat) + str(auditor._tempo))}"
         if cache_key_mixed not in st.session_state.audio_cache:
             wav_bytes_mixed = render_mixed_audio(notes_a, notes_b, auditor.ticks_per_beat, auditor._tempo)
-            st.session_state.audio_cache[cache_key_mixed] = wav_bytes_mixed
+            # Calculate duration from audio bytes
+            duration_mixed = calculate_audio_duration(wav_bytes_mixed)
+            # Store both audio and duration in cache
+            st.session_state.audio_cache[cache_key_mixed] = {
+                'audio_bytes': wav_bytes_mixed,
+                'duration': duration_mixed
+            }
+
+def calculate_audio_duration(audio_bytes):
+    """Calculate duration from WAV audio bytes."""
+    if not audio_bytes:
+        return 0.1
+
+    try:
+        import soundfile as sf
+        import io
+
+        # Read WAV data to get duration
+        buffer = io.BytesIO(audio_bytes)
+        data, samplerate = sf.read(buffer)
+        return len(data) / samplerate
+    except Exception as e:
+        # Fallback to default duration if calculation fails
+        return 0.1
 
 def render_segment_audio(notes, ticks_per_beat, tempo):
     """Render notes as WAV audio bytes using pretty_midi and soundfile"""
@@ -118,20 +158,7 @@ def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
 
 
 def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_beat=480, tempo=500000, match_id=None):
-    """Server-rendered audio player using Audix for playback"""
-
-    # Helper to calculate duration
-    def calculate_duration(notes):
-        if not notes:
-            return 0.1
-        try:
-            return max((n.get('tick',0) + n.get('duration',1)) / ticks_per_beat * (tempo / 1_000_000) for n in notes)
-        except:
-            return 0.1
-
-    duration_a = calculate_duration(notes_a)
-    duration_b = calculate_duration(notes_b) if notes_b else 0.1
-
+    """Read-only audio player component that only displays pre-cached audio."""
     # Layout columns if Segment B exists
     col1, col2 = st.columns(2) if notes_b else (st.container(), None)
 
@@ -140,7 +167,10 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
         st.markdown(f"**🎵 {label}**")
         if notes_a:
             cache_key_a = f"a_{match_id}_{hash(str(notes_a) + str(ticks_per_beat) + str(tempo))}"
-            wav_bytes_a = st.session_state.audio_cache.get(cache_key_a)
+            cached_data_a = st.session_state.audio_cache.get(cache_key_a, {})
+            wav_bytes_a = cached_data_a.get('audio_bytes')
+            duration_a = cached_data_a.get('duration', 0.1)
+
             if wav_bytes_a:
                 with st.container():
                     audix(f"audio_player_a_{match_id}", wav_bytes_a, sample_rate=44100)
@@ -156,7 +186,10 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
             st.markdown("**🎵 Segment B**")
             if notes_b:
                 cache_key_b = f"b_{match_id}_{hash(str(notes_b) + str(ticks_per_beat) + str(tempo))}"
-                wav_bytes_b = st.session_state.audio_cache.get(cache_key_b)
+                cached_data_b = st.session_state.audio_cache.get(cache_key_b, {})
+                wav_bytes_b = cached_data_b.get('audio_bytes')
+                duration_b = cached_data_b.get('duration', 0.1)
+
                 if wav_bytes_b:
                     with st.container():
                         audix(f"audio_player_b_{match_id}", wav_bytes_b, sample_rate=44100)
@@ -172,15 +205,16 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
         mixed_notes = (notes_a or []) + (notes_b or [])
         if mixed_notes:
             cache_key_mixed = f"mixed_{match_id}_{hash(str(mixed_notes) + str(ticks_per_beat) + str(tempo))}"
-            wav_bytes_mixed = st.session_state.audio_cache.get(cache_key_mixed)
+            cached_data_mixed = st.session_state.audio_cache.get(cache_key_mixed, {})
+            wav_bytes_mixed = cached_data_mixed.get('audio_bytes')
+            duration_mixed = cached_data_mixed.get('duration', 0.1)
+
             if wav_bytes_mixed:
                 with st.container():
                     audix(f"audio_player_mixed_{match_id}", wav_bytes_mixed, sample_rate=44100)
-                    mixed_duration = max(duration_a, duration_b)
-                    st.caption(f"Duration: {mixed_duration:.1f}s")
+                    st.caption(f"Duration: {duration_mixed:.1f}s")
             else:
-                mixed_duration = max(duration_a, duration_b)
-                st.info(f"Duration: {mixed_duration:.1f}s | No audio data generated.")
+                st.info(f"Duration: {duration_mixed:.1f}s | No audio data generated.")
         else:
             st.info("No notes to mix.")
 
