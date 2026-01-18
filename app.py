@@ -21,6 +21,34 @@ def init_audio_cache():
     if 'audio_cache' not in st.session_state:
         st.session_state.audio_cache = {}
 
+def initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches):
+    """Pre-generate and cache all audio during initialization phase."""
+    if 'audio_cache' not in st.session_state:
+        st.session_state.audio_cache = {}
+
+    # Pre-cache all large match audio
+    for lm in large_matches:
+        # Segment A
+        notes_a = auditor.notes_in_bar_range(lm.start_bar_a, lm.length_bars)
+        cache_key_a = f"a_{lm.id}_{hash(str(notes_a) + str(auditor.ticks_per_beat) + str(auditor._tempo))}"
+        if cache_key_a not in st.session_state.audio_cache:
+            wav_bytes_a = render_segment_audio(notes_a, auditor.ticks_per_beat, auditor._tempo)
+            st.session_state.audio_cache[cache_key_a] = wav_bytes_a
+
+        # Segment B
+        notes_b = auditor.notes_in_bar_range(lm.start_bar_b, lm.length_bars)
+        cache_key_b = f"b_{lm.id}_{hash(str(notes_b) + str(auditor.ticks_per_beat) + str(auditor._tempo))}"
+        if cache_key_b not in st.session_state.audio_cache:
+            wav_bytes_b = render_segment_audio(notes_b, auditor.ticks_per_beat, auditor._tempo)
+            st.session_state.audio_cache[cache_key_b] = wav_bytes_b
+
+        # Mixed
+        mixed_notes = (notes_a or []) + (notes_b or [])
+        cache_key_mixed = f"mixed_{lm.id}_{hash(str(mixed_notes) + str(auditor.ticks_per_beat) + str(auditor._tempo))}"
+        if cache_key_mixed not in st.session_state.audio_cache:
+            wav_bytes_mixed = render_mixed_audio(notes_a, notes_b, auditor.ticks_per_beat, auditor._tempo)
+            st.session_state.audio_cache[cache_key_mixed] = wav_bytes_mixed
+
 def render_segment_audio(notes, ticks_per_beat, tempo):
     """Render notes as WAV audio bytes using pretty_midi and soundfile"""
     if not notes:
@@ -92,9 +120,6 @@ def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
 def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_beat=480, tempo=500000, match_id=None):
     """Server-rendered audio player using Audix for playback"""
 
-    if "audio_cache" not in st.session_state:
-        st.session_state.audio_cache = {}
-
     # Helper to calculate duration
     def calculate_duration(notes):
         if not notes:
@@ -116,9 +141,6 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
         if notes_a:
             cache_key_a = f"a_{match_id}_{hash(str(notes_a) + str(ticks_per_beat) + str(tempo))}"
             wav_bytes_a = st.session_state.audio_cache.get(cache_key_a)
-            if wav_bytes_a is None:
-                wav_bytes_a = render_segment_audio(notes_a, ticks_per_beat, tempo)
-                st.session_state.audio_cache[cache_key_a] = wav_bytes_a
             if wav_bytes_a:
                 with st.container():
                     audix(f"audio_player_a_{match_id}", wav_bytes_a, sample_rate=44100)
@@ -135,9 +157,6 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
             if notes_b:
                 cache_key_b = f"b_{match_id}_{hash(str(notes_b) + str(ticks_per_beat) + str(tempo))}"
                 wav_bytes_b = st.session_state.audio_cache.get(cache_key_b)
-                if wav_bytes_b is None:
-                    wav_bytes_b = render_segment_audio(notes_b, ticks_per_beat, tempo)
-                    st.session_state.audio_cache[cache_key_b] = wav_bytes_b
                 if wav_bytes_b:
                     with st.container():
                         audix(f"audio_player_b_{match_id}", wav_bytes_b, sample_rate=44100)
@@ -154,9 +173,6 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
         if mixed_notes:
             cache_key_mixed = f"mixed_{match_id}_{hash(str(mixed_notes) + str(ticks_per_beat) + str(tempo))}"
             wav_bytes_mixed = st.session_state.audio_cache.get(cache_key_mixed)
-            if wav_bytes_mixed is None:
-                wav_bytes_mixed = render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo)
-                st.session_state.audio_cache[cache_key_mixed] = wav_bytes_mixed
             if wav_bytes_mixed:
                 with st.container():
                     audix(f"audio_player_mixed_{match_id}", wav_bytes_mixed, sample_rate=44100)
@@ -277,6 +293,9 @@ if uploaded_file:
 
     # Initialize audio cache safely after analysis
     init_audio_cache()
+
+    # Pre-generate all audio during initialization phase
+    initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches)
 
     # Prepare data
     sections = auditor.label_sections(large_matches)
