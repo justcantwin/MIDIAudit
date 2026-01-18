@@ -6,28 +6,7 @@ import functools
 import hashlib
 import platform
 
-# Try to set up FluidSynth for cross-platform compatibility
-try:
-    if platform.system() == "Windows":
-        # Try common FluidSynth installation paths
-        fluidsynth_paths = [
-            r"C:\tools\fluidsynth\bin",
-            r"C:\Program Files\fluidsynth\bin",
-            r"C:\fluidsynth\bin"
-        ]
-        for path in fluidsynth_paths:
-            if os.path.exists(path):
-                os.add_dll_directory(path)
-                break
-    # On macOS/Linux, FluidSynth should be in PATH or system libraries
-
-    import pretty_midi
-    import wave
-    FLUIDSYNTH_AVAILABLE = True
-except ImportError:
-    FLUIDSYNTH_AVAILABLE = False
-    pretty_midi = None
-    wave = None
+# Audio synthesis now handled client-side in browser
 
 import mido
 import numpy as np
@@ -616,144 +595,43 @@ class MIDIAuditor:
         return results
 
     def export_segment_as_midi(self, notes):
-        if not pretty_midi or not wave:
-            return None
-        pm = self.notes_to_pretty_midi(notes)
+        """Export notes as MIDI data for browser playback"""
+        # Create a simple MIDI file with the notes
+        from mido import MidiFile, MidiTrack, Message, MetaMessage
+
+        mid = MidiFile()
+        track = MidiTrack()
+        mid.tracks.append(track)
+
+        # Add tempo
+        track.append(MetaMessage('set_tempo', tempo=self._tempo))
+
+        # Sort notes by tick
+        notes_sorted = sorted(notes, key=lambda n: n["tick"])
+
+        last_tick = 0
+        for note in notes_sorted:
+            # Time delta from last event
+            delta_tick = note["tick"] - last_tick
+
+            # Note on
+            track.append(Message('note_on', note=note["pitch"], velocity=note["velocity"], time=delta_tick))
+
+            # Note off (use duration)
+            off_tick = note["tick"] + note["duration"]
+            delta_off = off_tick - note["tick"]
+            track.append(Message('note_off', note=note["pitch"], velocity=0, time=delta_off))
+
+            last_tick = off_tick
+
+        # End of track
+        track.append(MetaMessage('end_of_track'))
+
+        # Write to buffer
         buffer = io.BytesIO()
-        pm.write(buffer)
+        mid.save(file=buffer)
         buffer.seek(0)
         return buffer.getvalue()
-
-    def synthesize_notes_pretty_midi(self, notes):
-        """
-        Synthesizes audio for a list of notes using their REAL durations.
-        Notes must include both pitch and tick.
-        """
-        if not FLUIDSYNTH_AVAILABLE or not notes:
-            return None
-
-        # Determine earliest tick to normalize timing
-        min_tick = min(n["tick"] for n in notes)
-
-        # Build PrettyMIDI object
-        pm = pretty_midi.PrettyMIDI()
-        inst = pretty_midi.Instrument(program=0)
-
-        # Add notes with durations from the note dictionaries
-        for n in notes:
-            start_tick = n["tick"]
-            duration_ticks = n["duration"]
-
-            start_sec = mido.tick2second(start_tick - min_tick, self.ticks_per_beat, self._tempo)
-            end_sec = start_sec + mido.tick2second(duration_ticks, self.ticks_per_beat, self._tempo)
-
-            inst.notes.append(
-                pretty_midi.Note(
-                    velocity=n["velocity"],  # Use actual velocity
-                    pitch=n["pitch"],
-                    start=start_sec,
-                    end=end_sec
-                )
-            )
-
-        pm.instruments.append(inst)
-
-        # Render audio
-        try:
-            audio = pm.fluidsynth()
-            audio_int16 = np.int16(audio * 32767)
-
-            buffer = io.BytesIO()
-            with wave.open(buffer, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(44100)
-                wf.writeframes(audio_int16.tobytes())
-
-            buffer.seek(0)
-            return buffer.getvalue()
-        except Exception:
-            return None
-
-    def synthesize_mixed_segments(self, notes_a, notes_b):
-        """
-        Synthesizes mixed audio for two segments played simultaneously.
-        Useful for comparing similarity by hearing both at once.
-        """
-        if not FLUIDSYNTH_AVAILABLE or not notes_a or not notes_b:
-            return None
-
-        # Synthesize both segments
-        wav_a = self.synthesize_notes_pretty_midi(notes_a)
-        wav_b = self.synthesize_notes_pretty_midi(notes_b)
-
-        if not wav_a or not wav_b:
-            return None
-
-        try:
-            # Convert WAV bytes back to numpy arrays
-            buffer_a = io.BytesIO(wav_a)
-            buffer_b = io.BytesIO(wav_b)
-
-            with wave.open(buffer_a, "rb") as wf_a, wave.open(buffer_b, "rb") as wf_b:
-                # Read audio data
-                audio_a = np.frombuffer(wf_a.readframes(wf_a.getnframes()), dtype=np.int16).astype(np.float32) / 32767.0
-                audio_b = np.frombuffer(wf_b.readframes(wf_b.getnframes()), dtype=np.int16).astype(np.float32) / 32767.0
-
-                # Ensure same length by padding shorter one with zeros
-                max_len = max(len(audio_a), len(audio_b))
-                audio_a = np.pad(audio_a, (0, max_len - len(audio_a)), 'constant')
-                audio_b = np.pad(audio_b, (0, max_len - len(audio_b)), 'constant')
-
-                # Mix with reduced volume to avoid clipping
-                mixed = 0.5 * audio_a + 0.5 * audio_b
-
-                # Clip to prevent distortion
-                mixed = np.clip(mixed, -1.0, 1.0)
-
-                # Convert back to int16
-                mixed_int16 = np.int16(mixed * 32767)
-
-                # Write to new WAV buffer
-                buffer_mixed = io.BytesIO()
-                with wave.open(buffer_mixed, "wb") as wf_mixed:
-                    wf_mixed.setnchannels(1)
-                    wf_mixed.setsampwidth(2)
-                    wf_mixed.setframerate(44100)
-                    wf_mixed.writeframes(mixed_int16.tobytes())
-
-                buffer_mixed.seek(0)
-                return buffer_mixed.getvalue()
-
-        except Exception:
-            return None
-
-    def notes_to_pretty_midi(self, notes):
-        if not pretty_midi:
-            return None
-        pm = pretty_midi.PrettyMIDI()
-        inst = pretty_midi.Instrument(program=0)
-
-        # Determine earliest tick to normalize timing
-        min_tick = min(n["tick"] for n in notes) if notes else 0
-
-        for n in notes:
-            start = mido.tick2second(n["tick"] - min_tick, self.ticks_per_beat, self._tempo)
-            # Use actual duration from the note dict, converted to seconds
-            duration_sec = mido.tick2second(n["duration"], self.ticks_per_beat, self._tempo)
-            end = start + duration_sec
-
-            inst.notes.append(
-                pretty_midi.Note(
-                    velocity=n["velocity"],  # Use actual velocity
-                    pitch=n["pitch"],
-                    start=start,
-                    end=end
-                )
-            )
-
-        pm.instruments.append(inst)
-        return pm
 
     def export_markers_as_midi(self, large_matches, motif_matches=None):
         from mido import MidiFile, MidiTrack, MetaMessage

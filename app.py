@@ -3,6 +3,7 @@ import io
 import plotly.graph_objects as go
 import mido
 import base64
+import json
 
 from midi_auditor import MIDIAuditor
 from visualization import (
@@ -11,6 +12,244 @@ from visualization import (
     plot_timeline_with_overlaps,
     plot_piano_roll
 )
+
+# Custom component for browser-based MIDI synthesis
+def midi_player_component(midi_data_b64, label="Play MIDI"):
+    """Custom Streamlit component for browser MIDI playback"""
+
+    # JavaScript code for MIDI synthesis using Web Audio API
+    js_code = f"""
+    <div id="midi-player-container">
+        <button id="play-midi-btn" style="
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        ">{label}</button>
+        <div id="status" style="margin-top: 10px;"></div>
+    </div>
+
+    <script>
+    (function() {{
+        const midiData = "{midi_data_b64}";
+        const playBtn = document.getElementById('play-midi-btn');
+        const statusDiv = document.getElementById('status');
+
+        let audioContext = null;
+        let isPlaying = false;
+
+        playBtn.addEventListener('click', async function() {{
+            if (isPlaying) {{
+                stopPlayback();
+                return;
+            }}
+
+            try {{
+                statusDiv.textContent = "Initializing audio...";
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                if (audioContext.state === 'suspended') {{
+                    await audioContext.resume();
+                }}
+
+                statusDiv.textContent = "Loading MIDI data...";
+                const midiBytes = Uint8Array.from(atob(midiData), c => c.charCodeAt(0));
+
+                statusDiv.textContent = "Synthesizing audio...";
+                await playMIDI(midiBytes);
+
+            }} catch (error) {{
+                console.error('MIDI playback error:', error);
+                statusDiv.textContent = "Error: " + error.message;
+                statusDiv.style.color = "red";
+            }}
+        }});
+
+        async function playMIDI(midiBytes) {{
+            // Simple MIDI parser and synthesizer
+            const midiData = parseMIDI(midiBytes);
+            if (!midiData || midiData.tracks.length === 0) {{
+                throw new Error("Invalid MIDI data");
+            }}
+
+            isPlaying = true;
+            playBtn.textContent = "Stop";
+            playBtn.style.background = "#f44336";
+            statusDiv.textContent = "Playing...";
+
+            const startTime = audioContext.currentTime;
+
+            for (const track of midiData.tracks) {{
+                for (const event of track.events) {{
+                    if (event.type === 'noteOn' && event.velocity > 0) {{
+                        const noteTime = startTime + event.time;
+                        const duration = 0.5; // Default duration, could be improved
+                        playNote(event.note, event.velocity / 127, noteTime, duration);
+                    }}
+                }}
+            }}
+
+            // Stop after estimated duration
+            const estimatedDuration = midiData.duration || 10;
+            setTimeout(() => {{
+                stopPlayback();
+            }}, (estimatedDuration + 1) * 1000);
+        }}
+
+        function playNote(midiNote, velocity, startTime, duration) {{
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            // Convert MIDI note to frequency
+            const frequency = 440 * Math.pow(2, (midiNote - 69) / 12);
+
+            oscillator.frequency.setValueAtTime(frequency, startTime);
+            oscillator.type = 'sawtooth'; // Simple waveform
+
+            gainNode.gain.setValueAtTime(0, startTime);
+            gainNode.gain.linearRampToValueAtTime(velocity * 0.3, startTime + 0.01);
+            gainNode.gain.setValueAtTime(velocity * 0.3, startTime + duration - 0.01);
+            gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            oscillator.start(startTime);
+            oscillator.stop(startTime + duration);
+        }}
+
+        function parseMIDI(bytes) {{
+            // Very basic MIDI parser - only handles note on/off events
+            try {{
+                const data = new Uint8Array(bytes);
+                const tracks = [];
+                let pos = 14; // Skip header
+
+                // Find track chunks
+                while (pos < data.length - 8) {{
+                    if (data[pos] === 0x4D && data[pos+1] === 0x54 && data[pos+2] === 0x72 && data[pos+3] === 0x6B) {{
+                        // MTrk found
+                        const trackLength = (data[pos+4] << 24) | (data[pos+5] << 16) | (data[pos+6] << 8) | data[pos+7];
+                        const trackData = data.slice(pos + 8, pos + 8 + trackLength);
+
+                        const track = parseTrack(trackData);
+                        if (track.events.length > 0) {{
+                            tracks.push(track);
+                        }}
+
+                        pos += 8 + trackLength;
+                    }} else {{
+                        pos += 1;
+                    }}
+                }}
+
+                return {{ tracks: tracks, duration: 10 }}; // Estimate duration
+            }} catch (e) {{
+                console.error('MIDI parse error:', e);
+                return null;
+            }}
+        }}
+
+        function parseTrack(trackData) {{
+            const events = [];
+            let pos = 0;
+            let time = 0;
+            let lastStatus = 0;
+
+            while (pos < trackData.length) {{
+                // Read delta time (variable length)
+                let delta = 0;
+                let byte;
+                do {{
+                    byte = trackData[pos++];
+                    delta = (delta << 7) | (byte & 0x7F);
+                }} while (byte & 0x80);
+
+                time += delta / 1000; // Convert to seconds (rough)
+
+                // Read status byte
+                let status = trackData[pos++];
+                if (status < 0x80) {{
+                    // Running status
+                    status = lastStatus;
+                    pos--;
+                }}
+                lastStatus = status;
+
+                const type = status >> 4;
+                const channel = status & 0x0F;
+
+                if (type === 0x9) {{ // Note on
+                    const note = trackData[pos++];
+                    const velocity = trackData[pos++];
+                    if (velocity > 0) {{
+                        events.push({{
+                            type: 'noteOn',
+                            time: time,
+                            note: note,
+                            velocity: velocity,
+                            channel: channel
+                        }});
+                    }}
+                }} else if (type === 0x8) {{ // Note off
+                    const note = trackData[pos++];
+                    const velocity = trackData[pos++];
+                    events.push({{
+                        type: 'noteOff',
+                        time: time,
+                        note: note,
+                        velocity: velocity,
+                        channel: channel
+                    }});
+                }} else if (status === 0xFF) {{
+                    // Meta event
+                    const metaType = trackData[pos++];
+                    const length = trackData[pos++];
+                    pos += length; // Skip meta data
+                }} else {{
+                    // Skip other events
+                    const eventLength = getEventLength(status);
+                    pos += eventLength - 1; // -1 because we already read status
+                }}
+            }}
+
+            return {{ events: events }};
+        }}
+
+        function getEventLength(status) {{
+            const type = status >> 4;
+            switch (type) {{
+                case 0x8: case 0x9: case 0xA: case 0xB: case 0xE: return 2; // Note off/on, aftertouch, controller, pitch bend
+                case 0xC: case 0xD: return 1; // Program change, channel aftertouch
+                default: return 0;
+            }}
+        }}
+
+        function stopPlayback() {{
+            if (audioContext) {{
+                audioContext.close();
+                audioContext = null;
+            }}
+            isPlaying = false;
+            playBtn.textContent = "{label}";
+            playBtn.style.background = "#4CAF50";
+            statusDiv.textContent = "";
+        }}
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', stopPlayback);
+    }})();
+    </script>
+    """
+
+    st.markdown(js_code, unsafe_allow_html=True)
 
 
 # ================================================================
@@ -253,40 +492,19 @@ if uploaded_file:
                         with colB:
                             st.plotly_chart(plot_piano_roll(notes_b, auditor.ticks_per_beat, auditor._tempo, "Segment B"), use_container_width=True)
 
-                        # Audio preview with seeking controls
-                        try:
-                            wav_a = auditor.synthesize_notes_pretty_midi(notes_a)
-                            wav_b = auditor.synthesize_notes_pretty_midi(notes_b)
-                            wav_mixed = auditor.synthesize_mixed_segments(notes_a, notes_b)
+                        # Browser-based MIDI audio preview
+                        midi_a_b64 = base64.b64encode(auditor.export_segment_as_midi(notes_a)).decode()
+                        midi_b_b64 = base64.b64encode(auditor.export_segment_as_midi(notes_b)).decode()
 
-                            if wav_a and wav_b:
-                                col_audio1, col_audio2, col_audio3 = st.columns(3)
+                        col_audio1, col_audio2 = st.columns(2)
 
-                                def create_seekable_audio(wav_data, label):
-                                    if wav_data:
-                                        b64 = base64.b64encode(wav_data).decode()
-                                        audio_html = f'''
-                                        <div style="text-align: center;">
-                                            <p><strong>{label}</strong></p>
-                                            <audio controls style="width: 100%;">
-                                                <source src="data:audio/wav;base64,{b64}" type="audio/wav">
-                                                Your browser does not support the audio element.
-                                            </audio>
-                                        </div>
-                                        '''
-                                        return audio_html
-                                    return f"<p><strong>{label}</strong></p><p>No audio available</p>"
+                        with col_audio1:
+                            st.markdown("**🎵 Segment A Audio Preview**")
+                            midi_player_component(midi_a_b64, "Play Segment A")
 
-                                with col_audio1:
-                                    st.markdown(create_seekable_audio(wav_a, "Segment A"), unsafe_allow_html=True)
-                                with col_audio2:
-                                    st.markdown(create_seekable_audio(wav_b, "Segment B"), unsafe_allow_html=True)
-                                with col_audio3:
-                                    st.markdown(create_seekable_audio(wav_mixed, "Mixed A+B"), unsafe_allow_html=True)
-                            else:
-                                st.warning("Audio synthesis failed")
-                        except Exception as e:
-                            st.warning(f"Audio synthesis failed: {e}")
+                        with col_audio2:
+                            st.markdown("**🎵 Segment B Audio Preview**")
+                            midi_player_component(midi_b_b64, "Play Segment B")
 
                         # Downloads
                         col_dl1, col_dl2 = st.columns(2)
