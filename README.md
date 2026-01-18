@@ -19,7 +19,7 @@ A Streamlit web application for advanced musical structure analysis of MIDI file
    ```
 3. Run the application:
    ```bash
-   streamlit run greedy.py
+   streamlit run app.py
    ```
 
 ## Usage
