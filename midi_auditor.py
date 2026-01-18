@@ -6,18 +6,11 @@ import functools
 import hashlib
 import platform
 
-# Audio synthesis now handled server-side in Python
+# Audio synthesis temporarily disabled due to Python 3.13 compatibility issues
 
 import mido
 import numpy as np
 from collections import defaultdict
-
-# Audio rendering dependencies
-import pretty_midi
-import soundfile as sf
-import io
-import hashlib
-import os
 
 from models import Match, LargeMatch, TimeSignature
 from suffix_automaton import SuffixAutomaton
@@ -851,97 +844,6 @@ class MIDIAuditor:
             best = max(cluster, key=lambda m: (m.length, m.similarity))
             reps.append(best)
         return reps
-
-    def render_segment_audio(self, notes, ticks_per_beat, tempo):
-        """Render individual MIDI segment to WAV bytes using pretty_midi."""
-        if not notes:
-            return None
-
-        # Create PrettyMIDI object
-        pm = pretty_midi.PrettyMIDI(resolution=self.ticks_per_beat)
-
-        # Create instrument (use program 0 for piano)
-        instrument = pretty_midi.Instrument(program=0)
-
-        # Add notes to instrument
-        for note in notes:
-            start_time = mido.tick2second(note["tick"], ticks_per_beat, tempo)
-            end_time = mido.tick2second(note["tick"] + note["duration"], ticks_per_beat, tempo)
-            velocity = note["velocity"] / 127.0  # Normalize to 0-1
-
-            pm_note = pretty_midi.Note(
-                velocity=int(velocity * 127),  # Convert back to 0-127 for pretty_midi
-                pitch=note["pitch"],
-                start=start_time,
-                end=end_time
-            )
-            instrument.notes.append(pm_note)
-
-        pm.instruments.append(instrument)
-
-        # Synthesize to audio
-        sf2_path = os.path.join(os.path.dirname(__file__), 'FluidR3_GM.sf2')
-        audio = pm.fluidsynth(fs=44100, sf2_path=sf2_path)
-
-        # Write to BytesIO
-        buffer = io.BytesIO()
-        sf.write(buffer, audio, 44100, format='WAV')
-        buffer.seek(0)
-
-        return buffer
-
-    def render_mixed_audio(self, notes_a, notes_b, ticks_per_beat, tempo):
-        """Render mixed audio with both segments in separate instruments."""
-        if not notes_a and not notes_b:
-            return None
-
-        # Create PrettyMIDI object
-        pm = pretty_midi.PrettyMIDI(resolution=self.ticks_per_beat)
-
-        # Instrument for segment A
-        if notes_a:
-            instrument_a = pretty_midi.Instrument(program=0, name="Segment A")
-            for note in notes_a:
-                start_time = mido.tick2second(note["tick"], ticks_per_beat, tempo)
-                end_time = mido.tick2second(note["tick"] + note["duration"], ticks_per_beat, tempo)
-                velocity = note["velocity"] / 127.0
-
-                pm_note = pretty_midi.Note(
-                    velocity=int(velocity * 127),
-                    pitch=note["pitch"],
-                    start=start_time,
-                    end=end_time
-                )
-                instrument_a.notes.append(pm_note)
-            pm.instruments.append(instrument_a)
-
-        # Instrument for segment B
-        if notes_b:
-            instrument_b = pretty_midi.Instrument(program=0, name="Segment B")
-            for note in notes_b:
-                start_time = mido.tick2second(note["tick"], ticks_per_beat, tempo)
-                end_time = mido.tick2second(note["tick"] + note["duration"], ticks_per_beat, tempo)
-                velocity = note["velocity"] / 127.0
-
-                pm_note = pretty_midi.Note(
-                    velocity=int(velocity * 127),
-                    pitch=note["pitch"],
-                    start=start_time,
-                    end=end_time
-                )
-                instrument_b.notes.append(pm_note)
-            pm.instruments.append(instrument_b)
-
-        # Synthesize to audio
-        sf2_path = os.path.join(os.path.dirname(__file__), 'FluidR3_GM.sf2')
-        audio = pm.fluidsynth(fs=44100, sf2_path=sf2_path)
-
-        # Write to BytesIO
-        buffer = io.BytesIO()
-        sf.write(buffer, audio, 44100, format='WAV')
-        buffer.seek(0)
-
-        return buffer
 
     def postprocess_motifs(self, motifs):
         """Full pipeline: dedupe → cluster → pick representatives."""

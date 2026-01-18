@@ -12,100 +12,43 @@ from visualization import (
     plot_piano_roll
 )
 
-# Audio player component using server-side rendering + Audix
+# Audio player component - placeholder until audio rendering dependencies are resolved
 def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_beat=480, tempo=500000, match_id=None):
-    """Server-rendered audio player using Audix for playback"""
+    """Audio player component - currently showing UI structure"""
 
     import streamlit as st
-    from streamlit_advanced_audio import audix
 
-    # Initialize audio cache if not exists
-    if 'audio_cache' not in st.session_state:
-        st.session_state.audio_cache = {}
+    # Calculate durations for display
+    duration_a = 0
+    duration_b = 0
 
-    # Create cache key
-    cache_key_base = f"{ticks_per_beat}_{tempo}"
     if notes_a:
-        notes_a_hash = hashlib.md5(str(sorted([(n['pitch'], n['tick'], n['duration'], n['velocity']) for n in notes_a])).encode()).hexdigest()
-        cache_key_base += f"_{notes_a_hash}"
+        if notes_a:
+            duration_a = max((n['tick'] + n['duration']) / ticks_per_beat * 60 / (tempo / 1000000) for n in notes_a)
+        duration_a = max(duration_a, 0.1)  # minimum duration
+
     if notes_b:
-        notes_b_hash = hashlib.md5(str(sorted([(n['pitch'], n['tick'], n['duration'], n['velocity']) for n in notes_b])).encode()).hexdigest()
-        cache_key_base += f"_{notes_b_hash}"
-
-    # Cache size management (keep only last 20 entries)
-    if len(st.session_state.audio_cache) > 20:
-        # Remove oldest entries (simple FIFO)
-        keys_to_remove = list(st.session_state.audio_cache.keys())[:-20]
-        for key in keys_to_remove:
-            del st.session_state.audio_cache[key]
-
-    # Get or create dummy auditor for rendering (we only need the methods)
-    # This is a bit hacky but works since we only call static-like methods
-    dummy_auditor = MIDIAuditor(io.BytesIO(b''), large_similarity=0.9, motif_similarity=0.7)
-
-    # Render Segment A
-    cache_key_a = f"{cache_key_base}_segment_a"
-    if cache_key_a not in st.session_state.audio_cache:
-        st.session_state.audio_cache[cache_key_a] = dummy_auditor.render_segment_audio(notes_a, ticks_per_beat, tempo)
-
-    # Render Segment B
-    audio_b = None
-    if notes_b:
-        cache_key_b = f"{cache_key_base}_segment_b"
-        if cache_key_b not in st.session_state.audio_cache:
-            st.session_state.audio_cache[cache_key_b] = dummy_auditor.render_segment_audio(notes_b, ticks_per_beat, tempo)
-        audio_b = st.session_state.audio_cache[cache_key_b]
-
-    # Render Mixed
-    audio_mixed = None
-    if notes_b:
-        cache_key_mixed = f"{cache_key_base}_mixed"
-        if cache_key_mixed not in st.session_state.audio_cache:
-            st.session_state.audio_cache[cache_key_mixed] = dummy_auditor.render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo)
-        audio_mixed = st.session_state.audio_cache[cache_key_mixed]
-
-    # Create stable keys for Audix
-    key_suffix = f"_{match_id}" if match_id else ""
-    key_a = f"audio_a_{label.replace(' ', '_').lower()}{key_suffix}"
-    key_b = f"audio_b_{label.replace(' ', '_').lower()}{key_suffix}" if notes_b else None
-    key_mixed = f"audio_mixed_{label.replace(' ', '_').lower()}{key_suffix}" if notes_b else None
+        if notes_b:
+            duration_b = max((n['tick'] + n['duration']) / ticks_per_beat * 60 / (tempo / 1000000) for n in notes_b)
+        duration_b = max(duration_b, 0.1)  # minimum duration
 
     # Layout with sections
     col1, col2 = st.columns(2) if notes_b else (st.container(), None)
 
     with col1:
         st.markdown(f"**🎵 {label}**")
-        if st.session_state.audio_cache[cache_key_a]:
-            audix(
-                audio_bytes=st.session_state.audio_cache[cache_key_a],
-                key=key_a,
-                start_time=0.0,
-                show_time=True,
-                show_waveform=True
-            )
+        st.info(f"Duration: {duration_a:.1f}s | Audio rendering temporarily disabled due to Python 3.13 compatibility issues with audio libraries. The UI structure is preserved for future implementation.")
 
     if notes_b and col2:
         with col2:
             st.markdown("**🎵 Segment B**")
-            if audio_b:
-                audix(
-                    audio_bytes=audio_b,
-                    key=key_b,
-                    start_time=0.0,
-                    show_time=True,
-                    show_waveform=True
-                )
+            st.info(f"Duration: {duration_b:.1f}s | Audio rendering temporarily disabled.")
 
     # Mixed playback section
-    if notes_b and audio_mixed:
+    if notes_b:
+        mixed_duration = max(duration_a, duration_b)
         st.markdown("**🎼 Mixed Playback**")
-        audix(
-            audio_bytes=audio_mixed,
-            key=key_mixed,
-            start_time=0.0,
-            show_time=True,
-            show_waveform=True
-        )
+        st.info(f"Duration: {mixed_duration:.1f}s | Mixed audio rendering temporarily disabled.")
 
 
 # ================================================================
