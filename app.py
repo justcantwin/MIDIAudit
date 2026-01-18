@@ -58,7 +58,7 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
                 wav_bytes_a = st.session_state.audio_cache[cache_key_a]
 
             if wav_bytes_a:
-                audix("segment_a", wav_bytes_a, sample_rate=44100)
+                audix(f"audio_player_segment_a_{match_id}", wav_bytes_a, sample_rate=44100)
             else:
                 st.info(f"Duration: {duration_a:.1f}s | No audio data generated.")
         else:
@@ -83,7 +83,7 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
                     wav_bytes_b = st.session_state.audio_cache[cache_key_b]
 
                 if wav_bytes_b:
-                    audix("segment_b", wav_bytes_b, sample_rate=44100)
+                    audix(f"audio_player_segment_b_{match_id}", wav_bytes_b, sample_rate=44100)
                 else:
                     st.info(f"Duration: {duration_b:.1f}s | No audio data generated.")
             else:
@@ -108,7 +108,7 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
                 wav_bytes_mixed = st.session_state.audio_cache[cache_key_mixed]
 
             if wav_bytes_mixed:
-                audix("mixed", wav_bytes_mixed, sample_rate=44100)
+                audix(f"audio_player_mixed_{match_id}", wav_bytes_mixed, sample_rate=44100)
             else:
                 mixed_duration = max(duration_a, duration_b)
                 st.info(f"Duration: {mixed_duration:.1f}s | No audio data generated.")
