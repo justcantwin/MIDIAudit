@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import io
 import plotly.graph_objects as go
 import mido
@@ -13,14 +14,17 @@ from visualization import (
     plot_piano_roll
 )
 
-# Custom component for browser-based MIDI synthesis
+# Custom component for browser-based MIDI synthesis using Tone.js
 def midi_player_component(midi_data_b64, label="Play MIDI"):
-    """Custom Streamlit component for browser MIDI playback with debugging"""
+    """Professional MIDI player using Tone.js and Streamlit components"""
 
-    # JavaScript code for MIDI synthesis using Web Audio API
-    js_code = f"""
-    <div id="midi-player-container" style="border: 1px solid #ddd; padding: 10px; margin: 10px 0; border-radius: 5px;">
-        <button id="play-midi-btn" style="
+    # Create data URL for the MIDI file
+    midi_data_url = f"data:audio/midi;base64,{midi_data_b64}"
+
+    # HTML component using Tone.js
+    html_code = f"""
+    <div style="margin: 10px 0;">
+        <button id="play-btn" style="
             background: #4CAF50;
             border: none;
             color: white;
@@ -33,306 +37,115 @@ def midi_player_component(midi_data_b64, label="Play MIDI"):
             cursor: pointer;
             border-radius: 4px;
         ">{label}</button>
-        <button id="test-audio-btn" style="
-            background: #2196F3;
-            border: none;
-            color: white;
-            padding: 10px 20px;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
-            font-size: 16px;
-            margin: 4px 2px;
-            cursor: pointer;
-            border-radius: 4px;
-        ">Test Audio</button>
-        <div id="status" style="margin-top: 10px; font-family: monospace; font-size: 12px;"></div>
-        <div id="debug" style="margin-top: 10px; font-family: monospace; font-size: 10px; color: #666;"></div>
+        <div id="status" style="margin-top: 5px; font-size: 14px;"></div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <script>
     (function() {{
-        console.log('MIDI Player: Initializing...');
-        const midiData = "{midi_data_b64}";
-        const playBtn = document.getElementById('play-midi-btn');
-        const testBtn = document.getElementById('test-audio-btn');
+        const playBtn = document.getElementById('play-btn');
         const statusDiv = document.getElementById('status');
-        const debugDiv = document.getElementById('debug');
+        const midiUrl = "{midi_data_url}";
 
-        let audioContext = null;
         let isPlaying = false;
-
-        function log(message) {{
-            console.log('MIDI Player:', message);
-            debugDiv.textContent += message + '\\n';
-        }}
+        let synth = null;
+        let midiPart = null;
 
         function updateStatus(message, color = 'black') {{
             statusDiv.textContent = message;
             statusDiv.style.color = color;
-            log('Status: ' + message);
+            console.log('MIDI Player:', message);
         }}
 
-        // Test audio button
-        testBtn.addEventListener('click', async function() {{
-            log('Test Audio button clicked');
-            try {{
-                updateStatus('Testing audio...');
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                log('AudioContext created: ' + audioContext.state);
-
-                if (audioContext.state === 'suspended') {{
-                    log('Resuming suspended context...');
-                    await audioContext.resume();
-                }}
-
-                // Play a simple test tone
-                const oscillator = audioContext.createOscillator();
-                const gainNode = audioContext.createGain();
-
-                oscillator.frequency.setValueAtTime(440, audioContext.currentTime); // A4 note
-                oscillator.type = 'sine';
-
-                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 1);
-
-                oscillator.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-
-                oscillator.start(audioContext.currentTime);
-                oscillator.stop(audioContext.currentTime + 1);
-
-                updateStatus('Test tone played! Audio works.', 'green');
-                setTimeout(() => audioContext.close(), 1100);
-
-            }} catch (error) {{
-                console.error('Test audio error:', error);
-                updateStatus('Test failed: ' + error.message, 'red');
-            }}
-        }});
-
         playBtn.addEventListener('click', async function() {{
-            log('Play MIDI button clicked');
             if (isPlaying) {{
                 stopPlayback();
                 return;
             }}
 
             try {{
-                updateStatus('Initializing audio...');
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                log('AudioContext created: ' + audioContext.state);
+                updateStatus('Starting audio...');
 
-                if (audioContext.state === 'suspended') {{
-                    log('Resuming suspended context...');
-                    await audioContext.resume();
+                // Start Tone.js audio context
+                if (Tone.context.state !== 'running') {{
+                    await Tone.start();
                 }}
 
-                updateStatus('Decoding MIDI data...');
-                let midiBytes;
-                try {{
-                    midiBytes = Uint8Array.from(atob(midiData), c => c.charCodeAt(0));
-                    log('Decoded ' + midiBytes.length + ' bytes of MIDI data');
-                }} catch (e) {{
-                    throw new Error('Failed to decode base64 MIDI data: ' + e.message);
+                updateStatus('Loading MIDI...');
+
+                // Create synth if not exists
+                if (!synth) {{
+                    synth = new Tone.PolySynth(Tone.Synth, {{
+                        oscillator: {{ type: 'sawtooth' }},
+                        envelope: {{
+                            attack: 0.01,
+                            decay: 0.1,
+                            sustain: 0.3,
+                            release: 0.2
+                        }}
+                    }}).toDestination();
                 }}
 
-                updateStatus('Parsing MIDI...');
-                const midiEvents = parseSimpleMIDI(midiBytes);
-                log('Parsed ' + midiEvents.length + ' MIDI events');
+                // Fetch and parse MIDI
+                const response = await fetch(midiUrl);
+                const midiArrayBuffer = await response.arrayBuffer();
 
-                if (midiEvents.length === 0) {{
-                    throw new Error('No playable notes found in MIDI data');
+                // Use Tone.js MIDI converter
+                const midi = new Tone.Midi(midiArrayBuffer);
+
+                updateStatus('Preparing playback...');
+
+                // Create note events
+                const notes = [];
+                midi.tracks.forEach(track => {{
+                    track.notes.forEach(note => {{
+                        notes.push({{
+                            time: note.time,
+                            note: note.name, // Tone.js uses note names like 'C4'
+                            duration: note.duration,
+                            velocity: note.velocity
+                        }});
+                    }});
+                }});
+
+                if (notes.length === 0) {{
+                    throw new Error('No notes found in MIDI file');
                 }}
 
-                updateStatus('Playing MIDI...');
-                await playSimpleMIDI(midiEvents);
+                updateStatus('Playing...');
+
+                // Create and start part
+                midiPart = new Tone.Part((time, note) => {{
+                    synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+                }}, notes).start(0);
+
+                // Start Tone.js transport
+                Tone.Transport.start();
+
+                isPlaying = true;
+                playBtn.textContent = "Stop";
+                playBtn.style.background = "#f44336";
+
+                // Stop after playback
+                const totalDuration = Math.max(...notes.map(n => n.time + n.duration)) + 0.5;
+                Tone.Transport.schedule(() => {{
+                    stopPlayback();
+                }}, totalDuration);
 
             }} catch (error) {{
-                console.error('MIDI playback error:', error);
+                console.error('Playback error:', error);
                 updateStatus('Error: ' + error.message, 'red');
             }}
         }});
 
-        async function playSimpleMIDI(events) {{
-            isPlaying = true;
-            playBtn.textContent = "Stop";
-            playBtn.style.background = "#f44336";
-            updateStatus('Playing...');
-
-            const startTime = audioContext.currentTime;
-            let maxEndTime = 0;
-
-            for (const event of events) {{
-                if (event.type === 'noteOn' && event.velocity > 0) {{
-                    const noteStartTime = startTime + event.time;
-                    const duration = event.duration || 0.5;
-                    const endTime = noteStartTime + duration;
-                    maxEndTime = Math.max(maxEndTime, endTime);
-
-                    playNote(event.note, event.velocity / 127, noteStartTime, duration);
-                }}
-            }}
-
-            log('Scheduled ' + events.length + ' notes, total duration: ' + (maxEndTime - startTime) + 's');
-
-            // Stop after playback
-            const totalDuration = maxEndTime - startTime + 0.1;
-            setTimeout(() => {{
-                stopPlayback();
-            }}, totalDuration * 1000);
-        }}
-
-        function playNote(midiNote, velocity, startTime, duration) {{
-            try {{
-                const oscillator = audioContext.createOscillator();
-                const gainNode = audioContext.createGain();
-
-                // Convert MIDI note to frequency
-                const frequency = 440 * Math.pow(2, (midiNote - 69) / 12);
-                log('Playing note ' + midiNote + ' at ' + frequency.toFixed(1) + 'Hz');
-
-                oscillator.frequency.setValueAtTime(frequency, startTime);
-                oscillator.type = 'sawtooth';
-
-                gainNode.gain.setValueAtTime(0, startTime);
-                gainNode.gain.linearRampToValueAtTime(velocity * 0.3, startTime + 0.01);
-                gainNode.gain.setValueAtTime(velocity * 0.3, startTime + duration - 0.01);
-                gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
-
-                oscillator.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-
-                oscillator.start(startTime);
-                oscillator.stop(startTime + duration);
-            }} catch (e) {{
-                log('Error playing note: ' + e.message);
-            }}
-        }}
-
-        function parseSimpleMIDI(bytes) {{
-            const events = [];
-            let pos = 0;
-
-            try {{
-                // Skip MIDI header (first 14 bytes)
-                if (bytes.length < 14) {{
-                    throw new Error('MIDI file too short');
-                }}
-                pos = 14;
-
-                let absoluteTime = 0;
-
-                // Look for track chunks
-                while (pos < bytes.length - 8) {{
-                    // Check for 'MTrk'
-                    if (bytes[pos] === 0x4D && bytes[pos+1] === 0x54 &&
-                        bytes[pos+2] === 0x72 && bytes[pos+3] === 0x6B) {{
-
-                        const trackLength = (bytes[pos+4] << 24) | (bytes[pos+5] << 16) |
-                                          (bytes[pos+6] << 8) | bytes[pos+7];
-                        log('Found track of length ' + trackLength);
-
-                        pos += 8; // Skip header
-                        const trackEnd = pos + trackLength;
-
-                        let trackTime = 0;
-                        let lastStatus = 0;
-
-                        while (pos < trackEnd && pos < bytes.length) {{
-                            // Read variable-length delta time
-                            let delta = 0;
-                            let byte;
-                            do {{
-                                if (pos >= bytes.length) break;
-                                byte = bytes[pos++];
-                                delta = (delta << 7) | (byte & 0x7F);
-                            }} while (byte & 0x80);
-
-                            trackTime += delta;
-
-                            // Read status byte
-                            if (pos >= bytes.length) break;
-                            let status = bytes[pos++];
-                            if (status < 0x80) {{
-                                // Running status
-                                status = lastStatus;
-                                pos--;
-                            }}
-                            lastStatus = status;
-
-                            const type = status >> 4;
-                            const channel = status & 0x0F;
-
-                            if (type === 0x9) {{ // Note on
-                                if (pos + 1 >= bytes.length) break;
-                                const note = bytes[pos++];
-                                const velocity = bytes[pos++];
-                                if (velocity > 0) {{
-                                    events.push({{
-                                        type: 'noteOn',
-                                        time: trackTime / 1000, // Convert to seconds
-                                        note: note,
-                                        velocity: velocity,
-                                        channel: channel
-                                    }});
-                                }}
-                            }} else if (type === 0x8) {{ // Note off
-                                if (pos + 1 >= bytes.length) break;
-                                const note = bytes[pos++];
-                                const velocity = bytes[pos++];
-                                // Find corresponding note on and set duration
-                                for (let i = events.length - 1; i >= 0; i--) {{
-                                    const e = events[i];
-                                    if (e.type === 'noteOn' && e.note === note && e.channel === channel && !e.duration) {{
-                                        e.duration = (trackTime - (e.time * 1000)) / 1000;
-                                        break;
-                                    }}
-                                }}
-                            }} else if (status === 0xFF) {{
-                                // Meta event
-                                if (pos >= bytes.length) break;
-                                const metaType = bytes[pos++];
-                                if (pos >= bytes.length) break;
-                                const length = bytes[pos++];
-                                pos += length; // Skip
-                            }} else {{
-                                // Skip other events
-                                const length = getEventLength(status);
-                                pos += length;
-                            }}
-                        }}
-
-                        pos = trackEnd;
-                    }} else {{
-                        pos++;
-                    }}
-                }}
-
-                log('Parsed ' + events.length + ' note events');
-                return events;
-
-            }} catch (e) {{
-                log('Parse error: ' + e.message);
-                return [];
-            }}
-        }}
-
-        function getEventLength(status) {{
-            const type = status >> 4;
-            switch (type) {{
-                case 0x8: case 0x9: case 0xA: case 0xB: case 0xE: return 2;
-                case 0xC: case 0xD: return 1;
-                default: return 0;
-            }}
-        }}
-
         function stopPlayback() {{
-            log('Stopping playback');
-            if (audioContext) {{
-                audioContext.close();
-                audioContext = null;
+            if (midiPart) {{
+                midiPart.dispose();
+                midiPart = null;
             }}
+            Tone.Transport.stop();
+            Tone.Transport.cancel();
+
             isPlaying = false;
             playBtn.textContent = "{label}";
             playBtn.style.background = "#4CAF50";
@@ -340,13 +153,15 @@ def midi_player_component(midi_data_b64, label="Play MIDI"):
         }}
 
         // Cleanup on page unload
-        window.addEventListener('beforeunload', stopPlayback);
-        log('MIDI Player initialized successfully');
+        window.addEventListener('beforeunload', () => {{
+            if (synth) synth.dispose();
+            if (midiPart) midiPart.dispose();
+        }});
     }})();
     </script>
     """
 
-    st.markdown(js_code, unsafe_allow_html=True)
+    components.html(html_code, height=80)
 
 
 # ================================================================
