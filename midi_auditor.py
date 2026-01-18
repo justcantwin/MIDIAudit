@@ -33,6 +33,7 @@ class MIDIAuditor:
         self.large_similarity = large_similarity
         self.motif_similarity = motif_similarity
         self.quantize_ticks = int(self.ticks_per_beat * quantize_beats)
+        self.per_layer = per_layer
 
         # Caching
         self._cache = {}
