@@ -12,16 +12,18 @@ from visualization import (
     plot_piano_roll
 )
 
+# Safe session state initialization for audio cache
+def init_audio_cache():
+    """Initialize audio cache in session state safely."""
+    if 'audio_cache' not in st.session_state:
+        st.session_state.audio_cache = {}
+
 # Audio player component using server-side rendering + Audix
 def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_beat=480, tempo=500000, match_id=None):
     """Server-rendered audio player using Audix for playback"""
 
     import streamlit as st
     from streamlit_advanced_audio import audix
-
-    # Initialize audio cache if not exists
-    if 'audio_cache' not in st.session_state:
-        st.session_state.audio_cache = {}
 
     # Calculate durations for display
     duration_a = 0
@@ -58,7 +60,8 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
                 wav_bytes_a = st.session_state.audio_cache[cache_key_a]
 
             if wav_bytes_a:
-                audix(f"audio_player_segment_a_{match_id}", wav_bytes_a, sample_rate=44100)
+                with st.container():
+                    audix(f"audio_player_a_{match_id}", wav_bytes_a, sample_rate=44100)
             else:
                 st.info(f"Duration: {duration_a:.1f}s | No audio data generated.")
         else:
@@ -83,7 +86,8 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
                     wav_bytes_b = st.session_state.audio_cache[cache_key_b]
 
                 if wav_bytes_b:
-                    audix(f"audio_player_segment_b_{match_id}", wav_bytes_b, sample_rate=44100)
+                    with st.container():
+                        audix(f"audio_player_b_{match_id}", wav_bytes_b, sample_rate=44100)
                 else:
                     st.info(f"Duration: {duration_b:.1f}s | No audio data generated.")
             else:
@@ -108,7 +112,8 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
                 wav_bytes_mixed = st.session_state.audio_cache[cache_key_mixed]
 
             if wav_bytes_mixed:
-                audix(f"audio_player_mixed_{match_id}", wav_bytes_mixed, sample_rate=44100)
+                with st.container():
+                    audix(f"audio_player_mixed_{match_id}", wav_bytes_mixed, sample_rate=44100)
             else:
                 mixed_duration = max(duration_a, duration_b)
                 st.info(f"Duration: {mixed_duration:.1f}s | No audio data generated.")
@@ -221,6 +226,9 @@ if uploaded_file:
     motif_matches = auditor.postprocess_motifs(motif_matches)
     progress_bar.progress(100)
     status_text.text("✅ Analysis complete!")
+
+    # Initialize audio cache safely after analysis
+    init_audio_cache()
 
     # Prepare data
     sections = auditor.label_sections(large_matches)
