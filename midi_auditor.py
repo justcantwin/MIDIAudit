@@ -596,7 +596,6 @@ class MIDIAuditor:
 
     def export_segment_as_midi(self, notes):
         """Export notes as MIDI data for browser playback"""
-        # Create a simple MIDI file with the notes
         from mido import MidiFile, MidiTrack, Message, MetaMessage
 
         mid = MidiFile()
@@ -606,23 +605,61 @@ class MIDIAuditor:
         # Add tempo
         track.append(MetaMessage('set_tempo', tempo=self._tempo))
 
-        # Sort notes by tick
+        if not notes:
+            track.append(MetaMessage('end_of_track'))
+            buffer = io.BytesIO()
+            mid.save(file=buffer)
+            buffer.seek(0)
+            return buffer.getvalue()
+
+        # Sort notes by start tick
         notes_sorted = sorted(notes, key=lambda n: n["tick"])
 
-        last_tick = 0
+        # Create events list: (tick_time, event_type, note_data)
+        events = []
+
         for note in notes_sorted:
-            # Time delta from last event
-            delta_tick = note["tick"] - last_tick
+            # Note on event
+            events.append((note["tick"], 'note_on', note))
+            # Note off event
+            events.append((note["tick"] + max(1, note["duration"]), 'note_off', note))
 
-            # Note on
-            track.append(Message('note_on', note=note["pitch"], velocity=note["velocity"], time=delta_tick))
+        # Sort all events by tick time
+        events.sort(key=lambda x: x[0])
 
-            # Note off (use duration)
-            off_tick = note["tick"] + note["duration"]
-            delta_off = off_tick - note["tick"]
-            track.append(Message('note_off', note=note["pitch"], velocity=0, time=delta_off))
+        # Remove duplicates at same tick (prefer note_off over note_on if conflict)
+        filtered_events = []
+        i = 0
+        while i < len(events):
+            current_tick = events[i][0]
+            # Group events at same tick
+            tick_events = []
+            while i < len(events) and events[i][0] == current_tick:
+                tick_events.append(events[i])
+                i += 1
 
-            last_tick = off_tick
+            # Prefer note_off over note_on for same note at same tick
+            note_events = {}
+            for tick, event_type, note in tick_events:
+                key = (note["pitch"], event_type)
+                if key not in note_events:
+                    note_events[key] = (tick, event_type, note)
+
+            # Add events, preferring note_off
+            for (pitch, event_type), (tick, et, note) in note_events.items():
+                filtered_events.append((tick, et, note))
+
+        # Now create MIDI messages with proper delta times
+        last_tick = 0
+        for tick, event_type, note in filtered_events:
+            delta_tick = max(0, tick - last_tick)  # Ensure non-negative
+
+            if event_type == 'note_on':
+                track.append(Message('note_on', note=note["pitch"], velocity=note["velocity"], time=delta_tick))
+            elif event_type == 'note_off':
+                track.append(Message('note_off', note=note["pitch"], velocity=0, time=delta_tick))
+
+            last_tick = tick
 
         # End of track
         track.append(MetaMessage('end_of_track'))
