@@ -101,6 +101,12 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
         const eventsA = {events_a_json};
         const eventsB = {events_b_json};
 
+        // Debug: Verify event payloads are non-empty
+        console.log('Events A length:', eventsA.length);
+        console.log('Events B length:', eventsB.length);
+        if (eventsA.length > 0) console.log('First event A:', eventsA[0]);
+        if (eventsB.length > 0) console.log('First event B:', eventsB[0]);
+
         let synth = null;
         let partA = null;
         let partB = null;
@@ -126,6 +132,14 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
                     }}
                 }}).toDestination();
                 console.log('Single synth instance created');
+            }}
+        }}
+
+        // Centralize AudioContext enforcement
+        async function ensureAudioContext() {{
+            if (Tone.context.state !== 'running') {{
+                await Tone.start();
+                console.log('AudioContext started');
             }}
         }}
 
@@ -186,9 +200,10 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
 
             try {{
                 initSynth();
-                if (Tone.context.state !== 'running') {{
-                    await Tone.start();
-                }}
+                await ensureAudioContext();
+
+                // Debug sanity test (remove after confirmation)
+                synth.triggerAttackRelease("C4", 0.3);
 
                 updateStatus('Playing...');
                 playSegmentA();
@@ -211,9 +226,10 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
 
                 try {{
                     initSynth();
-                    if (Tone.context.state !== 'running') {{
-                        await Tone.start();
-                    }}
+                    await ensureAudioContext();
+
+                    // Debug sanity test (remove after confirmation)
+                    synth.triggerAttackRelease("C4", 0.3);
 
                     updateStatus('Playing...');
                     playSegmentB();
@@ -237,9 +253,10 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
 
                 try {{
                     initSynth();
-                    if (Tone.context.state !== 'running') {{
-                        await Tone.start();
-                    }}
+                    await ensureAudioContext();
+
+                    // Debug sanity test (remove after confirmation)
+                    synth.triggerAttackRelease("C4", 0.3);
 
                     updateStatus('Playing mixed...');
                     playMixed();
