@@ -1,10 +1,8 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import io
 import plotly.graph_objects as go
 import mido
-import base64
-import json
+import hashlib
 
 from midi_auditor import MIDIAuditor
 from visualization import (
@@ -14,319 +12,100 @@ from visualization import (
     plot_piano_roll
 )
 
-# Convert MIDI notes to JSON events for browser playback
-def notes_to_json_events(notes, ticks_per_beat, tempo):
-    """Convert MIDI notes to JSON format for Tone.js playback using actual timing values"""
-    import mido
+# Audio player component using server-side rendering + Audix
+def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_beat=480, tempo=500000, match_id=None):
+    """Server-rendered audio player using Audix for playback"""
 
-    if not notes:
-        return json.dumps([])
+    import streamlit as st
+    from streamlit_advanced_audio import audix
 
-    # Normalize event times: subtract earliest tick so event.time starts at 0
-    earliest_tick = min(note["tick"] for note in notes)
+    # Initialize audio cache if not exists
+    if 'audio_cache' not in st.session_state:
+        st.session_state.audio_cache = {}
 
-    events = []
-    for note in notes:
-        # Normalize tick time to start at 0, then convert to seconds
-        normalized_tick = note["tick"] - earliest_tick
-        time_seconds = mido.tick2second(normalized_tick, ticks_per_beat, tempo)
-        duration_seconds = mido.tick2second(note["duration"], ticks_per_beat, tempo)
-
-        # Convert MIDI note number to note name (C4, D#4, etc.)
-        note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-        octave = (note["pitch"] // 12) - 1
-        note_name = note_names[note["pitch"] % 12]
-        full_note_name = f"{note_name}{octave}"
-
-        events.append({
-            "time": time_seconds,      # Float seconds
-            "duration": duration_seconds,  # Float seconds
-            "note": full_note_name,    # Note name like "C4"
-            "velocity": note["velocity"] / 127.0  # 0-1 normalized
-        })
-
-    # Ensure events are sorted by time
-    events.sort(key=lambda x: x["time"])
-
-    return json.dumps(events)
-
-# Custom component for browser-based MIDI synthesis using Tone.js
-def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_beat=480, tempo=500000):
-    """Professional MIDI player using Tone.js and Streamlit components"""
-
-    # Convert notes to JSON for browser using actual timing values
-    events_a_json = notes_to_json_events(notes_a, ticks_per_beat, tempo)
-
+    # Create cache key
+    cache_key_base = f"{ticks_per_beat}_{tempo}"
+    if notes_a:
+        notes_a_hash = hashlib.md5(str(sorted([(n['pitch'], n['tick'], n['duration'], n['velocity']) for n in notes_a])).encode()).hexdigest()
+        cache_key_base += f"_{notes_a_hash}"
     if notes_b:
-        events_b_json = notes_to_json_events(notes_b, ticks_per_beat, tempo)
-    else:
-        events_b_json = "[]"
+        notes_b_hash = hashlib.md5(str(sorted([(n['pitch'], n['tick'], n['duration'], n['velocity']) for n in notes_b])).encode()).hexdigest()
+        cache_key_base += f"_{notes_b_hash}"
 
-    # HTML component using Tone.js
-    html_code = f"""
-    <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 8px; background: #f9f9f9;">
-        <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
-            <button id="play-a-btn" style="
-                background: #4CAF50;
-                border: none;
-                color: white;
-                padding: 10px 20px;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 14px;
-            ">Play {label}</button>
-            {"<button id='play-b-btn' style='background: #2196F3; border: none; color: white; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px;'>Play Segment B</button>" if notes_b else ""}
-            {"<button id='play-mixed-btn' style='background: #FF9800; border: none; color: white; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px;'>Play Mixed</button>" if notes_b else ""}
-            <button id="stop-btn" style="
-                background: #f44336;
-                border: none;
-                color: white;
-                padding: 10px 20px;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 14px;
-                display: none;
-            ">Stop</button>
-        </div>
-        <div id="status" style="font-size: 14px; color: #666;"></div>
-    </div>
+    # Cache size management (keep only last 20 entries)
+    if len(st.session_state.audio_cache) > 20:
+        # Remove oldest entries (simple FIFO)
+        keys_to_remove = list(st.session_state.audio_cache.keys())[:-20]
+        for key in keys_to_remove:
+            del st.session_state.audio_cache[key]
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
-    <script>
-    (function() {{
-        const playABtn = document.getElementById('play-a-btn');
-        const playBBtn = document.getElementById('play-b-btn');
-        const playMixedBtn = document.getElementById('play-mixed-btn');
-        const stopBtn = document.getElementById('stop-btn');
-        const statusDiv = document.getElementById('status');
+    # Get or create dummy auditor for rendering (we only need the methods)
+    # This is a bit hacky but works since we only call static-like methods
+    dummy_auditor = MIDIAuditor(io.BytesIO(b''), large_similarity=0.9, motif_similarity=0.7)
 
-        // Note events from Python (time and duration in seconds)
-        const eventsA = {events_a_json};
-        const eventsB = {events_b_json};
+    # Render Segment A
+    cache_key_a = f"{cache_key_base}_segment_a"
+    if cache_key_a not in st.session_state.audio_cache:
+        st.session_state.audio_cache[cache_key_a] = dummy_auditor.render_segment_audio(notes_a, ticks_per_beat, tempo)
 
-        // Debug: Verify event payloads are non-empty
-        console.log('Events A length:', eventsA.length);
-        console.log('Events B length:', eventsB.length);
-        if (eventsA.length > 0) console.log('First event A:', eventsA[0]);
-        if (eventsB.length > 0) console.log('First event B:', eventsB[0]);
+    # Render Segment B
+    audio_b = None
+    if notes_b:
+        cache_key_b = f"{cache_key_base}_segment_b"
+        if cache_key_b not in st.session_state.audio_cache:
+            st.session_state.audio_cache[cache_key_b] = dummy_auditor.render_segment_audio(notes_b, ticks_per_beat, tempo)
+        audio_b = st.session_state.audio_cache[cache_key_b]
 
-        let synth = null;
-        let partA = null;
-        let partB = null;
-        let stopTimer = null;
-        let isPlaying = false;
+    # Render Mixed
+    audio_mixed = None
+    if notes_b:
+        cache_key_mixed = f"{cache_key_base}_mixed"
+        if cache_key_mixed not in st.session_state.audio_cache:
+            st.session_state.audio_cache[cache_key_mixed] = dummy_auditor.render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo)
+        audio_mixed = st.session_state.audio_cache[cache_key_mixed]
 
-        function updateStatus(message, color = '#666') {{
-            statusDiv.textContent = message;
-            statusDiv.style.color = color;
-            console.log('Audio Player:', message);
-        }}
+    # Create stable keys for Audix
+    key_suffix = f"_{match_id}" if match_id else ""
+    key_a = f"audio_a_{label.replace(' ', '_').lower()}{key_suffix}"
+    key_b = f"audio_b_{label.replace(' ', '_').lower()}{key_suffix}" if notes_b else None
+    key_mixed = f"audio_mixed_{label.replace(' ', '_').lower()}{key_suffix}" if notes_b else None
 
-        // Initialize single synth instance (reuse across plays)
-        function initSynth() {{
-            if (!synth) {{
-                synth = new Tone.PolySynth(Tone.Synth, {{
-                    oscillator: {{ type: 'sawtooth' }},
-                    envelope: {{
-                        attack: 0.01,
-                        decay: 0.1,
-                        sustain: 0.3,
-                        release: 0.2
-                    }}
-                }}).toDestination();
-                console.log('Single synth instance created');
-            }}
-        }}
+    # Layout with sections
+    col1, col2 = st.columns(2) if notes_b else (st.container(), None)
 
-        // Centralize AudioContext enforcement
-        async function ensureAudioContext() {{
-            if (Tone.context.state !== 'running') {{
-                await Tone.start();
-                console.log('AudioContext started');
-            }}
-        }}
+    with col1:
+        st.markdown(f"**🎵 {label}**")
+        if st.session_state.audio_cache[cache_key_a]:
+            audix(
+                audio_bytes=st.session_state.audio_cache[cache_key_a],
+                key=key_a,
+                start_time=0.0,
+                show_time=True,
+                show_waveform=True
+            )
 
-        // Play segment A
-        function playSegmentA() {{
-            if (partA) {{
-                partA.dispose();
-            }}
-            partA = new Tone.Part((time, evt) => {{
-                console.log("Playing", evt.note, "at", time);
-                synth.triggerAttackRelease(evt.note, evt.duration, time, evt.velocity);
-            }}, eventsA);
-            partA.start(Tone.now());
-        }}
+    if notes_b and col2:
+        with col2:
+            st.markdown("**🎵 Segment B**")
+            if audio_b:
+                audix(
+                    audio_bytes=audio_b,
+                    key=key_b,
+                    start_time=0.0,
+                    show_time=True,
+                    show_waveform=True
+                )
 
-        // Play segment B
-        function playSegmentB() {{
-            if (partB) {{
-                partB.dispose();
-            }}
-            partB = new Tone.Part((time, evt) => {{
-                console.log("Playing", evt.note, "at", time);
-                synth.triggerAttackRelease(evt.note, evt.duration, time, evt.velocity);
-            }}, eventsB);
-            partB.start(Tone.now());
-        }}
-
-        // Play mixed (both segments simultaneously)
-        function playMixed() {{
-            // Dispose existing parts
-            if (partA) partA.dispose();
-            if (partB) partB.dispose();
-
-            // Create separate parts for each segment
-            partA = new Tone.Part((time, evt) => {{
-                console.log("Playing", evt.note, "at", time);
-                synth.triggerAttackRelease(evt.note, evt.duration, time, evt.velocity);
-            }}, eventsA);
-
-            partB = new Tone.Part((time, evt) => {{
-                console.log("Playing", evt.note, "at", time);
-                synth.triggerAttackRelease(evt.note, evt.duration, time, evt.velocity);
-            }}, eventsB);
-
-            // Start both at the same Tone.now() time
-            const startTime = Tone.now();
-            partA.start(startTime);
-            partB.start(startTime);
-        }}
-
-        // AudioContext warmup on first user gesture
-        document.addEventListener("click", async () => {{
-            if (Tone.context.state !== "running") {{
-                await Tone.start();
-                console.log('AudioContext warmed up');
-            }}
-        }}, {{ once: true }});
-
-        // Button event listeners
-        playABtn.addEventListener('click', async () => {{
-            if (isPlaying) return;
-
-            try {{
-                initSynth();
-                await ensureAudioContext();
-
-                // Debug sanity test (remove after confirmation)
-                synth.triggerAttackRelease("C4", 0.3);
-
-                updateStatus('Playing...');
-                playSegmentA();
-                isPlaying = true;
-                showStopButton();
-
-                // Clear existing timer and set new one
-                if (stopTimer) clearTimeout(stopTimer);
-                const duration = Math.max(...eventsA.map(e => e.time + e.duration)) + 0.1;
-                stopTimer = setTimeout(stopPlayback, duration * 1000);
-
-            }} catch (error) {{
-                updateStatus('Error: ' + error.message, 'red');
-            }}
-        }});
-
-        if (playBBtn) {{
-            playBBtn.addEventListener('click', async () => {{
-                if (isPlaying) return;
-
-                try {{
-                    initSynth();
-                    await ensureAudioContext();
-
-                    // Debug sanity test (remove after confirmation)
-                    synth.triggerAttackRelease("C4", 0.3);
-
-                    updateStatus('Playing...');
-                    playSegmentB();
-                    isPlaying = true;
-                    showStopButton();
-
-                    // Clear existing timer and set new one
-                    if (stopTimer) clearTimeout(stopTimer);
-                    const duration = Math.max(...eventsB.map(e => e.time + e.duration)) + 0.1;
-                    stopTimer = setTimeout(stopPlayback, duration * 1000);
-
-                }} catch (error) {{
-                    updateStatus('Error: ' + error.message, 'red');
-                }}
-            }});
-        }}
-
-        if (playMixedBtn) {{
-            playMixedBtn.addEventListener('click', async () => {{
-                if (isPlaying) return;
-
-                try {{
-                    initSynth();
-                    await ensureAudioContext();
-
-                    // Debug sanity test (remove after confirmation)
-                    synth.triggerAttackRelease("C4", 0.3);
-
-                    updateStatus('Playing mixed...');
-                    playMixed();
-                    isPlaying = true;
-                    showStopButton();
-
-                    // Clear existing timer and set new one
-                    if (stopTimer) clearTimeout(stopTimer);
-                    const durationA = Math.max(...eventsA.map(e => e.time + e.duration));
-                    const durationB = Math.max(...eventsB.map(e => e.time + e.duration));
-                    const maxDuration = Math.max(durationA, durationB) + 0.1;
-                    stopTimer = setTimeout(stopPlayback, maxDuration * 1000);
-
-                }} catch (error) {{
-                    updateStatus('Error: ' + error.message, 'red');
-                }}
-            }});
-        }}
-
-        stopBtn.addEventListener('click', stopPlayback);
-
-        function showStopButton() {{
-            [playABtn, playBBtn, playMixedBtn].forEach(btn => {{
-                if (btn) btn.style.display = 'none';
-            }});
-            stopBtn.style.display = 'inline-block';
-        }}
-
-        function showPlayButtons() {{
-            [playABtn, playBBtn, playMixedBtn].forEach(btn => {{
-                if (btn) btn.style.display = 'inline-block';
-            }});
-            stopBtn.style.display = 'none';
-        }}
-
-        function stopPlayback() {{
-            // Clear stop timer
-            if (stopTimer) {{
-                clearTimeout(stopTimer);
-                stopTimer = null;
-            }}
-
-            // Dispose Tone.Part instances only (keep synth)
-            if (partA) {{
-                partA.dispose();
-                partA = null;
-            }}
-            if (partB) {{
-                partB.dispose();
-                partB = null;
-            }}
-
-            isPlaying = false;
-            showPlayButtons();
-            updateStatus('Stopped');
-        }}
-
-        console.log('Audio player initialized - single synth, no Transport');
-    }})();
-    </script>
-    """
-
-    components.html(html_code, height=180)
+    # Mixed playback section
+    if notes_b and audio_mixed:
+        st.markdown("**🎼 Mixed Playback**")
+        audix(
+            audio_bytes=audio_mixed,
+            key=key_mixed,
+            start_time=0.0,
+            show_time=True,
+            show_waveform=True
+        )
 
 
 # ================================================================
@@ -569,16 +348,8 @@ if uploaded_file:
                         with colB:
                             st.plotly_chart(plot_piano_roll(notes_b, auditor.ticks_per_beat, auditor._tempo, "Segment B"), use_container_width=True)
 
-                        # Browser-based MIDI audio preview
-                        col_audio1, col_audio2 = st.columns(2)
-
-                        with col_audio1:
-                            st.markdown("**🎵 Segment A Audio Preview**")
-                            midi_player_component(notes_a, notes_b, "Segment A", auditor.ticks_per_beat, auditor._tempo)
-
-                        with col_audio2:
-                            st.markdown("**🎵 Segment B Audio Preview**")
-                            midi_player_component(notes_b, notes_a, "Segment B", auditor.ticks_per_beat, auditor._tempo)
+                        # Server-rendered audio preview
+                        audio_player_component(notes_a, notes_b, "Segment A", auditor.ticks_per_beat, auditor._tempo, lm.id)
 
                         # Downloads
                         col_dl1, col_dl2 = st.columns(2)
