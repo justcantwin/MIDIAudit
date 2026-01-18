@@ -45,7 +45,7 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
         st.markdown(f"**🎵 {label}**")
         if notes_a:
             # Generate WAV bytes for segment A
-            cache_key_a = f"segment_a_{match_id}_{hash(str(notes_a))}"
+            cache_key_a = f"segment_a_{match_id}{hash(str(notes_a))}"
             if cache_key_a not in st.session_state.audio_cache:
                 from midi_auditor import MIDIAuditor
                 # Create a temporary auditor just for audio rendering
@@ -70,7 +70,7 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
             st.markdown("**🎵 Segment B**")
             if notes_b:
                 # Generate WAV bytes for segment B
-                cache_key_b = f"segment_b_{match_id}_{hash(str(notes_b))}"
+                cache_key_b = f"segment_b{match_id}{hash(str(notes_b))}"
                 if cache_key_b not in st.session_state.audio_cache:
                     from midi_auditor import MIDIAuditor
                     # Create a temporary auditor just for audio rendering
@@ -95,7 +95,7 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
         mixed_notes = notes_a + notes_b if notes_a and notes_b else (notes_a or notes_b or [])
         if mixed_notes:
             # Generate WAV bytes for mixed playback
-            cache_key_mixed = f"mixed_{match_id}_{hash(str(mixed_notes))}"
+            cache_key_mixed = f"mixed{match_id}_{hash(str(mixed_notes))}"
             if cache_key_mixed not in st.session_state.audio_cache:
                 from midi_auditor import MIDIAuditor
                 # Create a temporary auditor just for audio rendering
