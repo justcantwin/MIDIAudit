@@ -331,6 +331,7 @@ if uploaded_file:
         min_motif_notes = st.slider("Min Motif Length (notes)", 3,16,4)
     with st.sidebar.expander("🔧 Advanced Options"):
         allow_overlapping_repeats = st.checkbox("Allow overlapping repeats (legacy mode)", value=False)
+        per_layer_features = st.checkbox("Per-Layer Features", value=False)
 
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -338,7 +339,7 @@ if uploaded_file:
     status_text.text("🔄 Initializing analysis...")
     progress_bar.progress(10)
 
-    auditor = MIDIAuditor(midi_stream, large_similarity=large_sim, motif_similarity=motif_sim)
+    auditor = MIDIAuditor(midi_stream, large_similarity=large_sim, motif_similarity=motif_sim, per_layer=per_layer_features)
     progress_bar.progress(30)
     status_text.text("📊 Building features...")
     progress_bar.progress(50)

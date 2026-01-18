@@ -23,6 +23,7 @@ class MIDIAuditor:
         large_similarity: float = 0.90,
         motif_similarity: float = 0.70,
         verbose: bool = True,  # Optional logging flag
+        per_layer: bool = False,  # If True, separate features by MIDI channel/layer
     ):
         self.verbose = verbose
         self.logs: List[str] = []
@@ -47,7 +48,7 @@ class MIDIAuditor:
 
         self._build_suffix_automaton()
         self.ticks_per_bar = self._compute_average_ticks_per_bar()
-        self.bar_features, self.num_bars = self._build_bar_features()
+        self.bar_features, self.num_bars = self._build_bar_features(self.per_layer)
 
     def _log(self, msg: str):
         if self.verbose:
@@ -131,7 +132,16 @@ class MIDIAuditor:
         if best_len > 0:
             self._log(f"Suffix automaton: longest repeat = {best_len} notes")
 
-    def _build_bar_features(self) -> Tuple[np.ndarray, int]:
+    def _build_bar_features(self, per_layer: bool = False) -> Tuple[np.ndarray, int]:
+        """
+        Build bar-level features for self-similarity.
+
+        Args:
+            per_layer: If True, separates layers in feature vector. Otherwise, sums across layers.
+        Returns:
+            features: np.ndarray[num_bars, feature_dim]
+            num_bars: int
+        """
         if not self.notes:
             return np.zeros((0, 12), dtype=np.float32), 0
 
@@ -139,13 +149,25 @@ class MIDIAuditor:
         bar_indices = [n["tick"] // bar_ticks for n in self.notes]
         num_bars = int(max(bar_indices)) + 1 if bar_indices else 0
 
-        chroma = np.zeros((num_bars, 12), dtype=np.float32)
+        if per_layer:
+            # Include layer/channel dimension
+            num_layers = max(n["channel"] for n in self.notes) + 1
+            chroma = np.zeros((num_bars, 12 * num_layers), dtype=np.float32)
+        else:
+            chroma = np.zeros((num_bars, 12), dtype=np.float32)
+
         rhythm = np.zeros((num_bars, 4), dtype=np.float32)
 
         for note, bar in zip(self.notes, bar_indices):
             pitch_class = note["pitch"] % 12
             weight = note["velocity"] / 127.0 * math.sqrt(note["duration"])
-            chroma[bar, pitch_class] += weight
+            if per_layer:
+                idx = pitch_class + 12 * note["channel"]
+            else:
+                idx = pitch_class
+            chroma[bar, idx] += weight
+
+            # Rhythm: position within bar (simplified to quarters)
             pos = (note["tick"] % bar_ticks) / bar_ticks
             quarter = int(pos * 4)
             if quarter < 4:
@@ -155,7 +177,7 @@ class MIDIAuditor:
         norms = np.linalg.norm(features, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
 
-        self._log(f"Built enhanced features for {num_bars} bars")
+        self._log(f"Built {'per-layer' if per_layer else 'summed-layer'} features for {num_bars} bars")
         return features / norms, num_bars
 
     def _find_exact_repeats_in_range(
