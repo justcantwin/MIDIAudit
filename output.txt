@@ -1,0 +1,18 @@
+Tempos: [300000, 508460, 526300, 550428, 566019, 576915, 666647]
+Time Signatures: [(0, 4, 4)]
+Notes extracted: 0
+Bars: 0
+Features shape: (0, 12)
+Logs:
+  Track 0: 9100 msgs, 4433 note_ons, 0 matched note_offs, 120 unmatched active
+  Extracted 0 notes from 1 tracks
+  Built suffix automaton
+Large matches: 0
+Motif matches: 0
+Additional Logs:
+  Track 0: 9100 msgs, 4433 note_ons, 0 matched note_offs, 120 unmatched active
+  Extracted 0 notes from 1 tracks
+  Built suffix automaton
+  Skipping large-scale: only 0 bars
+  Skipping motifs: only 0 unmapped notes
+  FINAL: 0 large + 0 motifs = 0.0% coverage

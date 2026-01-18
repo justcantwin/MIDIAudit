@@ -1,0 +1,24 @@
+Tempos: [300000, 508460, 526300, 550428, 566019, 576915, 666647]
+Time Signatures: [(0, 4, 4)]
+Notes extracted: 4433
+Bars: 105
+Features shape: (105, 16)
+Logs:
+  Track 0: 9100 msgs, 4433 note_ons, 0 matched note_offs, 120 unmatched active
+  Extracted 4433 notes from 1 tracks
+  Built suffix automaton
+  Suffix automaton: longest repeat = 389 notes
+  Built enhanced features for 105 bars
+Large matches: 5
+Motif matches: 2
+Additional Logs:
+  Track 0: 9100 msgs, 4433 note_ons, 0 matched note_offs, 120 unmatched active
+  Extracted 4433 notes from 1 tracks
+  Built suffix automaton
+  Suffix automaton: longest repeat = 389 notes
+  Built enhanced features for 105 bars
+  Large-scale: 5 matches (SOTA), 135.2% bar coverage
+    Tier 1 (long): 1 matches (12-64 notes)
+    Tier 2 (med):  0 matches (6-11 notes)
+    Tier 3 (short): 1 matches (4-5 notes)
+  FINAL: 5 large + 2 motifs = 96.8% coverage
