@@ -39,9 +39,22 @@ def calculate_audio_duration(audio_bytes):
     try:
         import soundfile as sf
         import io
+        import numpy as np
+
         buffer = io.BytesIO(audio_bytes)
         data, samplerate = sf.read(buffer)
-        return len(data) / samplerate
+
+        # Remove leading silence
+        if len(data.shape) > 1:
+            data = np.mean(data, axis=1)
+        threshold = 0.01
+        start_idx = 0
+        for i in range(len(data)):
+            if abs(data[i]) > threshold:
+                start_idx = i
+                break
+        trimmed_data = data[start_idx:]
+        return len(trimmed_data) / samplerate
     except Exception:
         return 0.1
 
@@ -85,24 +98,75 @@ def render_segment_audio(notes, ticks_per_beat, tempo):
         return b''
 
 def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
-    """Render mixed audio by combining notes numerically (simplified)."""
+    """Render mixed audio by overlaying segments A and B simultaneously."""
     if not notes_a and not notes_b:
         return b''
-    mixed_notes = (notes_a or []) + (notes_b or [])
-    return render_segment_audio(mixed_notes, ticks_per_beat, tempo)
+
+    try:
+        import pretty_midi
+        import soundfile as sf
+
+        # Create pretty_midi object
+        pm = pretty_midi.PrettyMIDI(resolution=ticks_per_beat)
+
+        # Create instrument (default piano)
+        instrument = pretty_midi.Instrument(program=0)
+
+        # Add notes from segment A with their original timing
+        for note in notes_a:
+            start_time = mido.tick2second(note["tick"], ticks_per_beat, tempo)
+            end_time = mido.tick2second(note["tick"] + note["duration"], ticks_per_beat, tempo)
+            pm_note = pretty_midi.Note(
+                velocity=int(note["velocity"]),
+                pitch=int(note["pitch"]),
+                start=start_time,
+                end=end_time
+            )
+            instrument.notes.append(pm_note)
+
+        # Add notes from segment B with their original timing (overlay)
+        for note in notes_b:
+            start_time = mido.tick2second(note["tick"], ticks_per_beat, tempo)
+            end_time = mido.tick2second(note["tick"] + note["duration"], ticks_per_beat, tempo)
+            pm_note = pretty_midi.Note(
+                velocity=int(note["velocity"]),
+                pitch=int(note["pitch"]),
+                start=start_time,
+                end=end_time
+            )
+            instrument.notes.append(pm_note)
+
+        pm.instruments.append(instrument)
+
+        # Try fluidsynth first, fallback to synthesize
+        try:
+            sf2_path = "FluidR3_GM.sf2"
+            audio_data = pm.fluidsynth(sf2_path) if os.path.exists(sf2_path) else pm.synthesize(fs=44100)
+        except Exception:
+            audio_data = pm.synthesize(fs=44100)
+
+        buffer = io.BytesIO()
+        sf.write(buffer, audio_data, 44100, format='WAV')
+        buffer.seek(0)
+        return buffer.getvalue()
+    except Exception as e:
+        st.error(f"Error rendering mixed audio: {e}")
+        return b''
 
 def initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches):
     """Pre-generate and cache all audio during initialization phase."""
+    # Use safe session state access
+    audio_cache = st.session_state.get('audio_cache', {})
     if 'audio_cache' not in st.session_state:
-        st.session_state.audio_cache = {}
+        st.session_state.audio_cache = audio_cache
 
     for lm in large_matches:
         # Segment A
         notes_a = auditor.notes_in_bar_range(lm.start_bar_a, lm.length_bars)
         key_a = f"a_{lm.id}_{hash(str(notes_a) + str(auditor.ticks_per_beat) + str(auditor._tempo))}"
-        if key_a not in st.session_state.audio_cache:
+        if key_a not in audio_cache:
             wav_bytes = render_segment_audio(notes_a, auditor.ticks_per_beat, auditor._tempo)
-            st.session_state.audio_cache[key_a] = {
+            audio_cache[key_a] = {
                 'audio_bytes': wav_bytes,
                 'duration': calculate_audio_duration(wav_bytes)
             }
@@ -110,9 +174,9 @@ def initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches):
         # Segment B
         notes_b = auditor.notes_in_bar_range(lm.start_bar_b, lm.length_bars)
         key_b = f"b_{lm.id}_{hash(str(notes_b) + str(auditor.ticks_per_beat) + str(auditor._tempo))}"
-        if key_b not in st.session_state.audio_cache:
+        if key_b not in audio_cache:
             wav_bytes = render_segment_audio(notes_b, auditor.ticks_per_beat, auditor._tempo)
-            st.session_state.audio_cache[key_b] = {
+            audio_cache[key_b] = {
                 'audio_bytes': wav_bytes,
                 'duration': calculate_audio_duration(wav_bytes)
             }
@@ -120,12 +184,15 @@ def initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches):
         # Mixed
         mixed_notes = (notes_a or []) + (notes_b or [])
         key_mixed = f"mixed_{lm.id}_{hash(str(mixed_notes) + str(auditor.ticks_per_beat) + str(auditor._tempo))}"
-        if key_mixed not in st.session_state.audio_cache:
+        if key_mixed not in audio_cache:
             wav_bytes = render_mixed_audio(notes_a, notes_b, auditor.ticks_per_beat, auditor._tempo)
-            st.session_state.audio_cache[key_mixed] = {
+            audio_cache[key_mixed] = {
                 'audio_bytes': wav_bytes,
                 'duration': calculate_audio_duration(wav_bytes)
             }
+
+    # Update session state with the complete cache
+    st.session_state.audio_cache = audio_cache
 
 # =========================
 # AUDIO PLAYER COMPONENT
@@ -143,8 +210,11 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
             wav_bytes = cached.get("audio_bytes")
             duration = cached.get("duration", 0.1)
             if wav_bytes:
-                audix_player(wav_bytes, key=f"audio_player_a_{match_id}", sample_rate=44100)
-                st.caption(f"Duration: {duration:.1f}s")
+                try:
+                    audix_player(wav_bytes, key=f"audio_player_a_{match_id}", sample_rate=44100)
+                    st.caption(f"Duration: {duration:.1f}s")
+                except Exception as e:
+                    st.warning(f"Audio playback error: {str(e)}")
             else:
                 st.info(f"Duration: {duration:.1f}s | No audio data generated.")
         else:
@@ -159,8 +229,11 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
             wav_bytes = cached.get("audio_bytes")
             duration = cached.get("duration", 0.1)
             if wav_bytes:
-                audix_player(wav_bytes, key=f"audio_player_b_{match_id}", sample_rate=44100)
-                st.caption(f"Duration: {duration:.1f}s")
+                try:
+                    audix_player(wav_bytes, key=f"audio_player_b_{match_id}", sample_rate=44100)
+                    st.caption(f"Duration: {duration:.1f}s")
+                except Exception as e:
+                    st.warning(f"Audio playback error: {str(e)}")
             else:
                 st.info(f"Duration: {duration:.1f}s | No audio data generated.")
 
@@ -173,8 +246,11 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
         wav_bytes = cached.get("audio_bytes")
         duration = cached.get("duration", 0.1)
         if wav_bytes:
-            audix_player(wav_bytes, key=f"audio_player_mixed_{match_id}", sample_rate=44100)
-            st.caption(f"Duration: {duration:.1f}s")
+            try:
+                audix_player(wav_bytes, key=f"audio_player_mixed_{match_id}", sample_rate=44100)
+                st.caption(f"Duration: {duration:.1f}s")
+            except Exception as e:
+                st.warning(f"Audio playback error: {str(e)}")
         else:
             st.info(f"Duration: {duration:.1f}s | No audio data generated.")
 
