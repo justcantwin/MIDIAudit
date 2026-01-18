@@ -25,6 +25,11 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
     import streamlit as st
     from streamlit_advanced_audio import audix
 
+    # Guard: Ensure session state is initialized before proceeding
+    if 'audio_cache' not in st.session_state:
+        st.info("Analysis in progress - audio cache initializing...")
+        return
+
     # Calculate durations for display
     duration_a = 0
     duration_b = 0
