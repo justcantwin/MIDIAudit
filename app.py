@@ -21,6 +21,14 @@ from visualization import (
 from streamlit_advanced_audio import audix
 audix_player = audix  # single shared instance
 
+# Import for error handling
+try:
+    from tornado.websocket import WebSocketClosedError
+    from tornado.iostream import StreamClosedError
+except ImportError:
+    WebSocketClosedError = Exception
+    StreamClosedError = Exception
+
 # =========================
 # SESSION STATE INIT
 # =========================
@@ -65,6 +73,7 @@ def render_segment_audio(notes, ticks_per_beat, tempo):
     try:
         import pretty_midi
         import soundfile as sf
+        import numpy as np
 
         pm = pretty_midi.PrettyMIDI(resolution=ticks_per_beat)
         instrument = pretty_midi.Instrument(program=0)
@@ -89,8 +98,19 @@ def render_segment_audio(notes, ticks_per_beat, tempo):
         except Exception:
             audio_data = pm.synthesize(fs=44100)
 
+        # Trim leading silence
+        threshold = 0.01
+        if len(audio_data.shape) > 1:
+            audio_data = np.mean(audio_data, axis=1)
+        start_idx = 0
+        for i in range(len(audio_data)):
+            if abs(audio_data[i]) > threshold:
+                start_idx = i
+                break
+        trimmed_audio = audio_data[start_idx:]
+
         buffer = io.BytesIO()
-        sf.write(buffer, audio_data, 44100, format='WAV')
+        sf.write(buffer, trimmed_audio, 44100, format='WAV')
         buffer.seek(0)
         return buffer.getvalue()
     except Exception as e:
@@ -105,6 +125,7 @@ def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
     try:
         import pretty_midi
         import soundfile as sf
+        import numpy as np
 
         # Create pretty_midi object
         pm = pretty_midi.PrettyMIDI(resolution=ticks_per_beat)
@@ -112,10 +133,14 @@ def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
         # Create instrument (default piano)
         instrument = pretty_midi.Instrument(program=0)
 
-        # Add notes from segment A with their original timing
+        # Find min tick for each segment to align to start at 0
+        min_tick_a = min(note["tick"] for note in notes_a) if notes_a else 0
+        min_tick_b = min(note["tick"] for note in notes_b) if notes_b else 0
+
+        # Add notes from segment A, aligned to start at 0
         for note in notes_a:
-            start_time = mido.tick2second(note["tick"], ticks_per_beat, tempo)
-            end_time = mido.tick2second(note["tick"] + note["duration"], ticks_per_beat, tempo)
+            start_time = mido.tick2second(note["tick"] - min_tick_a, ticks_per_beat, tempo)
+            end_time = mido.tick2second(note["tick"] - min_tick_a + note["duration"], ticks_per_beat, tempo)
             pm_note = pretty_midi.Note(
                 velocity=int(note["velocity"]),
                 pitch=int(note["pitch"]),
@@ -124,10 +149,10 @@ def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
             )
             instrument.notes.append(pm_note)
 
-        # Add notes from segment B with their original timing (overlay)
+        # Add notes from segment B, aligned to start at 0 (overlay)
         for note in notes_b:
-            start_time = mido.tick2second(note["tick"], ticks_per_beat, tempo)
-            end_time = mido.tick2second(note["tick"] + note["duration"], ticks_per_beat, tempo)
+            start_time = mido.tick2second(note["tick"] - min_tick_b, ticks_per_beat, tempo)
+            end_time = mido.tick2second(note["tick"] - min_tick_b + note["duration"], ticks_per_beat, tempo)
             pm_note = pretty_midi.Note(
                 velocity=int(note["velocity"]),
                 pitch=int(note["pitch"]),
@@ -145,8 +170,19 @@ def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
         except Exception:
             audio_data = pm.synthesize(fs=44100)
 
+        # Trim leading silence
+        threshold = 0.01
+        if len(audio_data.shape) > 1:
+            audio_data = np.mean(audio_data, axis=1)
+        start_idx = 0
+        for i in range(len(audio_data)):
+            if abs(audio_data[i]) > threshold:
+                start_idx = i
+                break
+        trimmed_audio = audio_data[start_idx:]
+
         buffer = io.BytesIO()
-        sf.write(buffer, audio_data, 44100, format='WAV')
+        sf.write(buffer, trimmed_audio, 44100, format='WAV')
         buffer.seek(0)
         return buffer.getvalue()
     except Exception as e:
@@ -213,6 +249,8 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
                 try:
                     audix_player(wav_bytes, key=f"audio_player_a_{match_id}", sample_rate=44100)
                     st.caption(f"Duration: {duration:.1f}s")
+                except (WebSocketClosedError, StreamClosedError) as e:
+                    st.warning("WebSocket connection lost. Please refresh the page.")
                 except Exception as e:
                     st.warning(f"Audio playback error: {str(e)}")
             else:
@@ -232,6 +270,8 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
                 try:
                     audix_player(wav_bytes, key=f"audio_player_b_{match_id}", sample_rate=44100)
                     st.caption(f"Duration: {duration:.1f}s")
+                except (WebSocketClosedError, StreamClosedError) as e:
+                    st.warning("WebSocket connection lost. Please refresh the page.")
                 except Exception as e:
                     st.warning(f"Audio playback error: {str(e)}")
             else:
@@ -249,6 +289,8 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
             try:
                 audix_player(wav_bytes, key=f"audio_player_mixed_{match_id}", sample_rate=44100)
                 st.caption(f"Duration: {duration:.1f}s")
+            except (WebSocketClosedError, StreamClosedError) as e:
+                st.warning("WebSocket connection lost. Please refresh the page.")
             except Exception as e:
                 st.warning(f"Audio playback error: {str(e)}")
         else:
