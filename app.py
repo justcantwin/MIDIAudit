@@ -45,6 +45,9 @@ def notes_to_json_events(notes, ticks_per_beat, tempo):
             "velocity": note["velocity"] / 127.0  # 0-1 normalized
         })
 
+    # Ensure events are sorted by time
+    events.sort(key=lambda x: x["time"])
+
     return json.dumps(events)
 
 # Custom component for browser-based MIDI synthesis using Tone.js
@@ -148,8 +151,9 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
             if (partA) {{
                 partA.dispose();
             }}
-            partA = new Tone.Part((time, note) => {{
-                synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+            partA = new Tone.Part((time, evt) => {{
+                console.log("Playing", evt.note, "at", time);
+                synth.triggerAttackRelease(evt.note, evt.duration, time, evt.velocity);
             }}, eventsA);
             partA.start(Tone.now());
         }}
@@ -159,8 +163,9 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
             if (partB) {{
                 partB.dispose();
             }}
-            partB = new Tone.Part((time, note) => {{
-                synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+            partB = new Tone.Part((time, evt) => {{
+                console.log("Playing", evt.note, "at", time);
+                synth.triggerAttackRelease(evt.note, evt.duration, time, evt.velocity);
             }}, eventsB);
             partB.start(Tone.now());
         }}
@@ -172,12 +177,14 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
             if (partB) partB.dispose();
 
             // Create separate parts for each segment
-            partA = new Tone.Part((time, note) => {{
-                synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+            partA = new Tone.Part((time, evt) => {{
+                console.log("Playing", evt.note, "at", time);
+                synth.triggerAttackRelease(evt.note, evt.duration, time, evt.velocity);
             }}, eventsA);
 
-            partB = new Tone.Part((time, note) => {{
-                synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+            partB = new Tone.Part((time, evt) => {{
+                console.log("Playing", evt.note, "at", time);
+                synth.triggerAttackRelease(evt.note, evt.duration, time, evt.velocity);
             }}, eventsB);
 
             // Start both at the same Tone.now() time
