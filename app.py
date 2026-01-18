@@ -131,7 +131,7 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI"):
         // Play specific events
         async function playEvents(events, partRef, label) {{
             try {{
-                updateStatus(`Starting ${label.toLowerCase()}...`);
+                updateStatus('Starting ' + label.toLowerCase() + '...');
 
                 // Start audio context if needed
                 if (Tone.context.state !== 'running') {{
@@ -150,7 +150,7 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI"):
                     synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
                 }}, events).start(0);
 
-                updateStatus(`Playing ${label.toLowerCase()}...`);
+                updateStatus('Playing ' + label.toLowerCase() + '...');
 
                 // Start transport
                 Tone.Transport.start();
@@ -165,8 +165,8 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI"):
                 }}, duration);
 
             }} catch (error) {{
-                console.error(`Error playing ${label.toLowerCase()}:`, error);
-                updateStatus(`Error: ${error.message}`, 'red');
+                console.error('Error playing ' + label.toLowerCase() + ':', error);
+                updateStatus('Error: ' + error.message, 'red');
             }}
         }}
 
