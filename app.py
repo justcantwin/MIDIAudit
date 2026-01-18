@@ -13,6 +13,8 @@ from visualization import (
     plot_piano_roll
 )
 
+from streamlit_advanced_audio import audix
+
 # Safe session state initialization for audio cache
 def init_audio_cache():
     """Initialize audio cache in session state safely."""
@@ -85,45 +87,40 @@ def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
     # For now, just render the mixed notes (proper numerical mixing would be more complex)
     return render_segment_audio(mixed_notes, ticks_per_beat, tempo)
 
+
+
 def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_beat=480, tempo=500000, match_id=None):
     """Server-rendered audio player using Audix for playback"""
 
-    from streamlit_advanced_audio import audix
+    if "audio_cache" not in st.session_state:
+        st.session_state.audio_cache = {}
 
-    # Calculate durations for display
+    # Helper to calculate duration
     def calculate_duration(notes):
         if not notes:
             return 0.1
         try:
-            return max((n['tick'] + n['duration']) / ticks_per_beat * 60 / (tempo / 1000000) for n in notes)
+            return max((n.get('tick',0) + n.get('duration',1)) / ticks_per_beat * (tempo / 1_000_000) for n in notes)
         except:
             return 0.1
 
     duration_a = calculate_duration(notes_a)
     duration_b = calculate_duration(notes_b) if notes_b else 0.1
 
-    # Layout with sections
+    # Layout columns if Segment B exists
     col1, col2 = st.columns(2) if notes_b else (st.container(), None)
 
-    # Segment A player
+    # Segment A
     with col1:
         st.markdown(f"**🎵 {label}**")
         if notes_a:
-            # Generate cache key based on content hash
-            cache_key_a = f"segment_a_{match_id}_{hash(str(notes_a) + str(ticks_per_beat) + str(tempo))}"
-
-            # Check cache first
+            cache_key_a = f"a_{match_id}_{hash(str(notes_a) + str(ticks_per_beat) + str(tempo))}"
             wav_bytes_a = st.session_state.audio_cache.get(cache_key_a)
-
             if wav_bytes_a is None:
-                # Render audio
                 wav_bytes_a = render_segment_audio(notes_a, ticks_per_beat, tempo)
-                # Cache the result
                 st.session_state.audio_cache[cache_key_a] = wav_bytes_a
-
             if wav_bytes_a:
                 with st.container():
-                    # Use proper key format as specified
                     audix(f"audio_player_a_{match_id}", wav_bytes_a, sample_rate=44100)
                     st.caption(f"Duration: {duration_a:.1f}s")
             else:
@@ -131,26 +128,18 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
         else:
             st.info("No notes to play.")
 
-    # Segment B player
+    # Segment B
     if notes_b and col2:
         with col2:
             st.markdown("**🎵 Segment B**")
             if notes_b:
-                # Generate cache key based on content hash
-                cache_key_b = f"segment_b_{match_id}_{hash(str(notes_b) + str(ticks_per_beat) + str(tempo))}"
-
-                # Check cache first
+                cache_key_b = f"b_{match_id}_{hash(str(notes_b) + str(ticks_per_beat) + str(tempo))}"
                 wav_bytes_b = st.session_state.audio_cache.get(cache_key_b)
-
                 if wav_bytes_b is None:
-                    # Render audio
                     wav_bytes_b = render_segment_audio(notes_b, ticks_per_beat, tempo)
-                    # Cache the result
                     st.session_state.audio_cache[cache_key_b] = wav_bytes_b
-
                 if wav_bytes_b:
                     with st.container():
-                        # Use proper key format as specified
                         audix(f"audio_player_b_{match_id}", wav_bytes_b, sample_rate=44100)
                         st.caption(f"Duration: {duration_b:.1f}s")
                 else:
@@ -158,26 +147,18 @@ def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_b
             else:
                 st.info("No notes to play.")
 
-    # Mixed playback section
+    # Mixed Playback
     if notes_b:
         st.markdown("**🎼 Mixed Playback**")
-        mixed_notes = notes_a + notes_b if notes_a and notes_b else (notes_a or notes_b or [])
+        mixed_notes = (notes_a or []) + (notes_b or [])
         if mixed_notes:
-            # Generate cache key based on content hash
             cache_key_mixed = f"mixed_{match_id}_{hash(str(mixed_notes) + str(ticks_per_beat) + str(tempo))}"
-
-            # Check cache first
             wav_bytes_mixed = st.session_state.audio_cache.get(cache_key_mixed)
-
             if wav_bytes_mixed is None:
-                # Render mixed audio
                 wav_bytes_mixed = render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo)
-                # Cache the result
                 st.session_state.audio_cache[cache_key_mixed] = wav_bytes_mixed
-
             if wav_bytes_mixed:
                 with st.container():
-                    # Use proper key format as specified
                     audix(f"audio_player_mixed_{match_id}", wav_bytes_mixed, sample_rate=44100)
                     mixed_duration = max(duration_a, duration_b)
                     st.caption(f"Duration: {mixed_duration:.1f}s")
