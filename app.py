@@ -15,15 +15,15 @@ from visualization import (
 )
 
 # Convert MIDI notes to JSON events for browser playback
-def notes_to_json_events(notes, tempo=500000):
-    """Convert MIDI notes to JSON format for Tone.js playback"""
+def notes_to_json_events(notes, ticks_per_beat, tempo):
+    """Convert MIDI notes to JSON format for Tone.js playback using actual timing values"""
     import mido
 
     events = []
     for note in notes:
-        # Convert tick time to seconds
-        time_seconds = mido.tick2second(note["tick"], 480, tempo)  # Assume 480 ticks per beat
-        duration_seconds = mido.tick2second(note["duration"], 480, tempo)
+        # Convert tick time to seconds using actual MIDI timing
+        time_seconds = mido.tick2second(note["tick"], ticks_per_beat, tempo)
+        duration_seconds = mido.tick2second(note["duration"], ticks_per_beat, tempo)
 
         # Convert MIDI note number to note name (C4, D#4, etc.)
         note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -32,30 +32,25 @@ def notes_to_json_events(notes, tempo=500000):
         full_note_name = f"{note_name}{octave}"
 
         events.append({
-            "time": time_seconds,
-            "duration": duration_seconds,
-            "note": full_note_name,
-            "velocity": note["velocity"] / 127.0  # Normalize to 0-1
+            "time": time_seconds,      # Float seconds
+            "duration": duration_seconds,  # Float seconds
+            "note": full_note_name,    # Note name like "C4"
+            "velocity": note["velocity"] / 127.0  # 0-1 normalized
         })
 
     return json.dumps(events)
 
 # Custom component for browser-based MIDI synthesis using Tone.js
-def midi_player_component(notes_a, notes_b=None, label="Play MIDI"):
+def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_beat=480, tempo=500000):
     """Professional MIDI player using Tone.js and Streamlit components"""
 
-    # Convert notes to JSON for browser
-    events_a_json = notes_to_json_events(notes_a)
+    # Convert notes to JSON for browser using actual timing values
+    events_a_json = notes_to_json_events(notes_a, ticks_per_beat, tempo)
 
     if notes_b:
-        events_b_json = notes_to_json_events(notes_b)
-        # For mixed playback, combine both note sets
-        all_notes = notes_a + notes_b
-        # Adjust timing so they start at the same time
-        events_mixed_json = notes_to_json_events(all_notes)
+        events_b_json = notes_to_json_events(notes_b, ticks_per_beat, tempo)
     else:
         events_b_json = "[]"
-        events_mixed_json = events_a_json
 
     # HTML component using Tone.js
     html_code = f"""
@@ -95,15 +90,13 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI"):
         const stopBtn = document.getElementById('stop-btn');
         const statusDiv = document.getElementById('status');
 
-        // Note events from Python
+        // Note events from Python (time and duration in seconds)
         const eventsA = {events_a_json};
         const eventsB = {events_b_json};
-        const eventsMixed = {events_mixed_json};
 
         let synth = null;
         let partA = null;
         let partB = null;
-        let partMixed = null;
         let isPlaying = false;
 
         function updateStatus(message, color = '#666') {{
@@ -112,7 +105,7 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI"):
             console.log('Audio Player:', message);
         }}
 
-        // Initialize synth
+        // Initialize single synth instance (reuse across plays)
         function initSynth() {{
             if (!synth) {{
                 synth = new Tone.PolySynth(Tone.Synth, {{
@@ -124,59 +117,129 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI"):
                         release: 0.2
                     }}
                 }}).toDestination();
-                console.log('Synth initialized');
+                console.log('Single synth instance created');
             }}
         }}
 
-        // Play specific events
-        async function playEvents(events, partRef, label) {{
-            try {{
-                updateStatus('Starting ' + label.toLowerCase() + '...');
+        // Play single segment
+        function playSegment(events, partRef) {{
+            // Dispose existing part for this segment
+            if (partRef) {{
+                partRef.dispose();
+            }}
 
-                // Start audio context if needed
+            // Create Tone.Part with absolute time values
+            partRef = new Tone.Part((time, note) => {{
+                synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+            }}, events);
+
+            // Start immediately at Tone.now() - no Transport
+            partRef.start(Tone.now());
+        }}
+
+        // Play mixed (both segments simultaneously)
+        function playMixed() {{
+            // Dispose existing parts
+            if (partA) partA.dispose();
+            if (partB) partB.dispose();
+
+            // Create separate parts for each segment
+            partA = new Tone.Part((time, note) => {{
+                synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+            }}, eventsA);
+
+            partB = new Tone.Part((time, note) => {{
+                synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+            }}, eventsB);
+
+            // Start both at the same Tone.now() time
+            const startTime = Tone.now();
+            partA.start(startTime);
+            partB.start(startTime);
+        }}
+
+        // AudioContext warmup on first user gesture
+        document.addEventListener("click", async () => {{
+            if (Tone.context.state !== "running") {{
+                await Tone.start();
+                console.log('AudioContext warmed up');
+            }}
+        }}, {{ once: true }});
+
+        // Button event listeners
+        playABtn.addEventListener('click', async () => {{
+            if (isPlaying) return;
+
+            try {{
+                initSynth();
                 if (Tone.context.state !== 'running') {{
                     await Tone.start();
                 }}
 
-                initSynth();
-
-                // Dispose existing part
-                if (partRef) {{
-                    partRef.dispose();
-                }}
-
-                // Create new part
-                partRef = new Tone.Part((time, note) => {{
-                    synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
-                }}, events).start(0);
-
-                updateStatus('Playing ' + label.toLowerCase() + '...');
-
-                // Start transport
-                Tone.Transport.start();
-
+                updateStatus('Playing...');
+                playSegment(eventsA, partA);
                 isPlaying = true;
                 showStopButton();
 
-                // Auto-stop after playback
-                const duration = Math.max(...events.map(e => e.time + e.duration)) + 0.5;
-                Tone.Transport.schedule(() => {{
-                    stopPlayback();
-                }}, duration);
+                // Auto-stop after segment duration
+                const duration = Math.max(...eventsA.map(e => e.time + e.duration)) + 0.1;
+                setTimeout(stopPlayback, duration * 1000);
 
             }} catch (error) {{
-                console.error('Error playing ' + label.toLowerCase() + ':', error);
                 updateStatus('Error: ' + error.message, 'red');
             }}
+        }});
+
+        if (playBBtn) {{
+            playBBtn.addEventListener('click', async () => {{
+                if (isPlaying) return;
+
+                try {{
+                    initSynth();
+                    if (Tone.context.state !== 'running') {{
+                        await Tone.start();
+                    }}
+
+                    updateStatus('Playing...');
+                    playSegment(eventsB, partB);
+                    isPlaying = true;
+                    showStopButton();
+
+                    // Auto-stop after segment duration
+                    const duration = Math.max(...eventsB.map(e => e.time + e.duration)) + 0.1;
+                    setTimeout(stopPlayback, duration * 1000);
+
+                }} catch (error) {{
+                    updateStatus('Error: ' + error.message, 'red');
+                }}
+            }});
         }}
 
-        // Button event listeners
-        playABtn.addEventListener('click', () => playEvents(eventsA, partA, 'Segment A'));
-        if (playBBtn) {{
-            playBBtn.addEventListener('click', () => playEvents(eventsB, partB, 'Segment B'));
-        }}
         if (playMixedBtn) {{
-            playMixedBtn.addEventListener('click', () => playEvents(eventsMixed, partMixed, 'Mixed'));
+            playMixedBtn.addEventListener('click', async () => {{
+                if (isPlaying) return;
+
+                try {{
+                    initSynth();
+                    if (Tone.context.state !== 'running') {{
+                        await Tone.start();
+                    }}
+
+                    updateStatus('Playing mixed...');
+                    playMixed();
+                    isPlaying = true;
+                    showStopButton();
+
+                    // Auto-stop after longest segment duration
+                    const durationA = Math.max(...eventsA.map(e => e.time + e.duration));
+                    const durationB = Math.max(...eventsB.map(e => e.time + e.duration));
+                    const maxDuration = Math.max(durationA, durationB) + 0.1;
+                    setTimeout(stopPlayback, maxDuration * 1000);
+
+                }} catch (error) {{
+                    updateStatus('Error: ' + error.message, 'red');
+                }}
+            }});
         }}
 
         stopBtn.addEventListener('click', stopPlayback);
@@ -196,29 +259,22 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI"):
         }}
 
         function stopPlayback() {{
-            Tone.Transport.stop();
-            Tone.Transport.cancel();
-
-            // Dispose parts
-            [partA, partB, partMixed].forEach(part => {{
-                if (part) {{
-                    part.dispose();
-                    part = null;
-                }}
-            }});
+            // Dispose Tone.Part instances only (keep synth)
+            if (partA) {{
+                partA.dispose();
+                partA = null;
+            }}
+            if (partB) {{
+                partB.dispose();
+                partB = null;
+            }}
 
             isPlaying = false;
             showPlayButtons();
             updateStatus('Stopped');
         }}
 
-        // Cleanup
-        window.addEventListener('beforeunload', () => {{
-            stopPlayback();
-            if (synth) synth.dispose();
-        }});
-
-        console.log('Audio player initialized with', eventsA.length, 'A notes', eventsB.length, 'B notes');
+        console.log('Audio player initialized - single synth, no Transport');
     }})();
     </script>
     """
@@ -471,11 +527,11 @@ if uploaded_file:
 
                         with col_audio1:
                             st.markdown("**🎵 Segment A Audio Preview**")
-                            midi_player_component(notes_a, notes_b, "Segment A")
+                            midi_player_component(notes_a, notes_b, "Segment A", auditor.ticks_per_beat, auditor._tempo)
 
                         with col_audio2:
                             st.markdown("**🎵 Segment B Audio Preview**")
-                            midi_player_component(notes_b, notes_a, "Segment B")
+                            midi_player_component(notes_b, notes_a, "Segment B", auditor.ticks_per_beat, auditor._tempo)
 
                         # Downloads
                         col_dl1, col_dl2 = st.columns(2)
