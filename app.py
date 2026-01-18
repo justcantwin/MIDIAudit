@@ -1,5 +1,6 @@
 import streamlit as st
 import io
+import os
 import plotly.graph_objects as go
 import mido
 import hashlib
@@ -18,31 +19,88 @@ def init_audio_cache():
     if 'audio_cache' not in st.session_state:
         st.session_state.audio_cache = {}
 
-# Audio player component using server-side rendering + Audix
-def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_beat=480, tempo=500000, match_id=None):
+def render_segment_audio(notes, ticks_per_beat, tempo):
+    """Render notes as WAV audio bytes using pretty_midi and soundfile"""
+    if not notes:
+        return b''
+
+    try:
+        # Import pretty_midi and soundfile locally to avoid issues
+        import pretty_midi
+        import soundfile as sf
+
+        # Create pretty_midi object
+        pm = pretty_midi.PrettyMIDI(resolution=ticks_per_beat)
+
+        # Create instrument (default piano)
+        instrument = pretty_midi.Instrument(program=0)
+
+        # Convert notes to pretty_midi format
+        for note in notes:
+            # Convert tick time to seconds
+            start_time = mido.tick2second(note["tick"], ticks_per_beat, tempo)
+            end_time = mido.tick2second(note["tick"] + note["duration"], ticks_per_beat, tempo)
+
+            # Create pretty_midi note
+            pm_note = pretty_midi.Note(
+                velocity=int(note["velocity"]),
+                pitch=int(note["pitch"]),
+                start=start_time,
+                end=end_time
+            )
+            instrument.notes.append(pm_note)
+
+        pm.instruments.append(instrument)
+
+        # Synthesize audio with sound font if available
+        try:
+            # Try to use the FluidR3_GM.sf2 sound font if it exists
+            sf2_path = "FluidR3_GM.sf2"
+            if os.path.exists(sf2_path):
+                audio_data = pm.fluidsynth(sf2_path)
+            else:
+                audio_data = pm.synthesize(fs=44100)
+        except Exception as e:
+            # Fallback to default synthesis if fluidsynth fails
+            audio_data = pm.synthesize(fs=44100)
+
+        # Write to WAV buffer
+        buffer = io.BytesIO()
+        sf.write(buffer, audio_data, 44100, format='WAV')
+        buffer.seek(0)
+        return buffer.getvalue()
+
+    except Exception as e:
+        st.error(f"Error rendering audio: {e}")
+        return b''
+
+def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
+    """Render mixed audio by numerically mixing WAV bytes"""
+    if not notes_a and not notes_b:
+        return b''
+
+    # Combine notes
+    mixed_notes = notes_a + notes_b if notes_a and notes_b else (notes_a or notes_b or [])
+
+    # For now, just render the mixed notes (proper numerical mixing would be more complex)
+    return render_segment_audio(mixed_notes, ticks_per_beat, tempo)
+
+def audio_player_component(notes_a, notes_b=None, label="Segment A", ticks_per_beat=480, tempo=500000, match_id=None):
     """Server-rendered audio player using Audix for playback"""
 
-    import streamlit as st
     from streamlit_advanced_audio import audix
 
-    # Guard: Ensure session state is initialized before proceeding
-    if 'audio_cache' not in st.session_state:
-        st.info("Analysis in progress - audio cache initializing...")
-        return
-
     # Calculate durations for display
-    duration_a = 0
-    duration_b = 0
+    def calculate_duration(notes):
+        if not notes:
+            return 0.1
+        try:
+            return max((n['tick'] + n['duration']) / ticks_per_beat * 60 / (tempo / 1000000) for n in notes)
+        except:
+            return 0.1
 
-    if notes_a:
-        if notes_a:
-            duration_a = max((n['tick'] + n['duration']) / ticks_per_beat * 60 / (tempo / 1000000) for n in notes_a)
-        duration_a = max(duration_a, 0.1)  # minimum duration
-
-    if notes_b:
-        if notes_b:
-            duration_b = max((n['tick'] + n['duration']) / ticks_per_beat * 60 / (tempo / 1000000) for n in notes_b)
-        duration_b = max(duration_b, 0.1)  # minimum duration
+    duration_a = calculate_duration(notes_a)
+    duration_b = calculate_duration(notes_b) if notes_b else 0.1
 
     # Layout with sections
     col1, col2 = st.columns(2) if notes_b else (st.container(), None)
@@ -51,22 +109,23 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
     with col1:
         st.markdown(f"**🎵 {label}**")
         if notes_a:
-            # Generate WAV bytes for segment A
-            cache_key_a = f"segment_a_{match_id}{hash(str(notes_a))}"
-            if cache_key_a not in st.session_state.audio_cache:
-                from midi_auditor import MIDIAuditor
-                # Create a temporary auditor just for audio rendering
-                dummy_auditor = MIDIAuditor.__new__(MIDIAuditor)
-                dummy_auditor.ticks_per_beat = ticks_per_beat
-                dummy_auditor._tempo = tempo
-                wav_bytes_a = dummy_auditor.render_segment_as_wav(notes_a)
+            # Generate cache key based on content hash
+            cache_key_a = f"segment_a_{match_id}_{hash(str(notes_a) + str(ticks_per_beat) + str(tempo))}"
+
+            # Check cache first
+            wav_bytes_a = st.session_state.audio_cache.get(cache_key_a)
+
+            if wav_bytes_a is None:
+                # Render audio
+                wav_bytes_a = render_segment_audio(notes_a, ticks_per_beat, tempo)
+                # Cache the result
                 st.session_state.audio_cache[cache_key_a] = wav_bytes_a
-            else:
-                wav_bytes_a = st.session_state.audio_cache[cache_key_a]
 
             if wav_bytes_a:
                 with st.container():
+                    # Use proper key format as specified
                     audix(f"audio_player_a_{match_id}", wav_bytes_a, sample_rate=44100)
+                    st.caption(f"Duration: {duration_a:.1f}s")
             else:
                 st.info(f"Duration: {duration_a:.1f}s | No audio data generated.")
         else:
@@ -77,22 +136,23 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
         with col2:
             st.markdown("**🎵 Segment B**")
             if notes_b:
-                # Generate WAV bytes for segment B
-                cache_key_b = f"segment_b{match_id}{hash(str(notes_b))}"
-                if cache_key_b not in st.session_state.audio_cache:
-                    from midi_auditor import MIDIAuditor
-                    # Create a temporary auditor just for audio rendering
-                    dummy_auditor = MIDIAuditor.__new__(MIDIAuditor)
-                    dummy_auditor.ticks_per_beat = ticks_per_beat
-                    dummy_auditor._tempo = tempo
-                    wav_bytes_b = dummy_auditor.render_segment_as_wav(notes_b)
+                # Generate cache key based on content hash
+                cache_key_b = f"segment_b_{match_id}_{hash(str(notes_b) + str(ticks_per_beat) + str(tempo))}"
+
+                # Check cache first
+                wav_bytes_b = st.session_state.audio_cache.get(cache_key_b)
+
+                if wav_bytes_b is None:
+                    # Render audio
+                    wav_bytes_b = render_segment_audio(notes_b, ticks_per_beat, tempo)
+                    # Cache the result
                     st.session_state.audio_cache[cache_key_b] = wav_bytes_b
-                else:
-                    wav_bytes_b = st.session_state.audio_cache[cache_key_b]
 
                 if wav_bytes_b:
                     with st.container():
+                        # Use proper key format as specified
                         audix(f"audio_player_b_{match_id}", wav_bytes_b, sample_rate=44100)
+                        st.caption(f"Duration: {duration_b:.1f}s")
                 else:
                     st.info(f"Duration: {duration_b:.1f}s | No audio data generated.")
             else:
@@ -103,22 +163,24 @@ def audio_player_component(notes_a, notes_b=None, label="Play Audio", ticks_per_
         st.markdown("**🎼 Mixed Playback**")
         mixed_notes = notes_a + notes_b if notes_a and notes_b else (notes_a or notes_b or [])
         if mixed_notes:
-            # Generate WAV bytes for mixed playback
-            cache_key_mixed = f"mixed{match_id}_{hash(str(mixed_notes))}"
-            if cache_key_mixed not in st.session_state.audio_cache:
-                from midi_auditor import MIDIAuditor
-                # Create a temporary auditor just for audio rendering
-                dummy_auditor = MIDIAuditor.__new__(MIDIAuditor)
-                dummy_auditor.ticks_per_beat = ticks_per_beat
-                dummy_auditor._tempo = tempo
-                wav_bytes_mixed = dummy_auditor.render_segment_as_wav(mixed_notes)
+            # Generate cache key based on content hash
+            cache_key_mixed = f"mixed_{match_id}_{hash(str(mixed_notes) + str(ticks_per_beat) + str(tempo))}"
+
+            # Check cache first
+            wav_bytes_mixed = st.session_state.audio_cache.get(cache_key_mixed)
+
+            if wav_bytes_mixed is None:
+                # Render mixed audio
+                wav_bytes_mixed = render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo)
+                # Cache the result
                 st.session_state.audio_cache[cache_key_mixed] = wav_bytes_mixed
-            else:
-                wav_bytes_mixed = st.session_state.audio_cache[cache_key_mixed]
 
             if wav_bytes_mixed:
                 with st.container():
+                    # Use proper key format as specified
                     audix(f"audio_player_mixed_{match_id}", wav_bytes_mixed, sample_rate=44100)
+                    mixed_duration = max(duration_a, duration_b)
+                    st.caption(f"Duration: {mixed_duration:.1f}s")
             else:
                 mixed_duration = max(duration_a, duration_b)
                 st.info(f"Duration: {mixed_duration:.1f}s | No audio data generated.")
