@@ -19,10 +19,17 @@ def notes_to_json_events(notes, ticks_per_beat, tempo):
     """Convert MIDI notes to JSON format for Tone.js playback using actual timing values"""
     import mido
 
+    if not notes:
+        return json.dumps([])
+
+    # Normalize event times: subtract earliest tick so event.time starts at 0
+    earliest_tick = min(note["tick"] for note in notes)
+
     events = []
     for note in notes:
-        # Convert tick time to seconds using actual MIDI timing
-        time_seconds = mido.tick2second(note["tick"], ticks_per_beat, tempo)
+        # Normalize tick time to start at 0, then convert to seconds
+        normalized_tick = note["tick"] - earliest_tick
+        time_seconds = mido.tick2second(normalized_tick, ticks_per_beat, tempo)
         duration_seconds = mido.tick2second(note["duration"], ticks_per_beat, tempo)
 
         # Convert MIDI note number to note name (C4, D#4, etc.)
@@ -97,6 +104,7 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
         let synth = null;
         let partA = null;
         let partB = null;
+        let stopTimer = null;
         let isPlaying = false;
 
         function updateStatus(message, color = '#666') {{
@@ -121,20 +129,26 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
             }}
         }}
 
-        // Play single segment
-        function playSegment(events, partRef) {{
-            // Dispose existing part for this segment
-            if (partRef) {{
-                partRef.dispose();
+        // Play segment A
+        function playSegmentA() {{
+            if (partA) {{
+                partA.dispose();
             }}
-
-            // Create Tone.Part with absolute time values
-            partRef = new Tone.Part((time, note) => {{
+            partA = new Tone.Part((time, note) => {{
                 synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
-            }}, events);
+            }}, eventsA);
+            partA.start(Tone.now());
+        }}
 
-            // Start immediately at Tone.now() - no Transport
-            partRef.start(Tone.now());
+        // Play segment B
+        function playSegmentB() {{
+            if (partB) {{
+                partB.dispose();
+            }}
+            partB = new Tone.Part((time, note) => {{
+                synth.triggerAttackRelease(note.note, note.duration, time, note.velocity);
+            }}, eventsB);
+            partB.start(Tone.now());
         }}
 
         // Play mixed (both segments simultaneously)
@@ -177,13 +191,14 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
                 }}
 
                 updateStatus('Playing...');
-                playSegment(eventsA, partA);
+                playSegmentA();
                 isPlaying = true;
                 showStopButton();
 
-                // Auto-stop after segment duration
+                // Clear existing timer and set new one
+                if (stopTimer) clearTimeout(stopTimer);
                 const duration = Math.max(...eventsA.map(e => e.time + e.duration)) + 0.1;
-                setTimeout(stopPlayback, duration * 1000);
+                stopTimer = setTimeout(stopPlayback, duration * 1000);
 
             }} catch (error) {{
                 updateStatus('Error: ' + error.message, 'red');
@@ -201,13 +216,14 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
                     }}
 
                     updateStatus('Playing...');
-                    playSegment(eventsB, partB);
+                    playSegmentB();
                     isPlaying = true;
                     showStopButton();
 
-                    // Auto-stop after segment duration
+                    // Clear existing timer and set new one
+                    if (stopTimer) clearTimeout(stopTimer);
                     const duration = Math.max(...eventsB.map(e => e.time + e.duration)) + 0.1;
-                    setTimeout(stopPlayback, duration * 1000);
+                    stopTimer = setTimeout(stopPlayback, duration * 1000);
 
                 }} catch (error) {{
                     updateStatus('Error: ' + error.message, 'red');
@@ -230,11 +246,12 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
                     isPlaying = true;
                     showStopButton();
 
-                    // Auto-stop after longest segment duration
+                    // Clear existing timer and set new one
+                    if (stopTimer) clearTimeout(stopTimer);
                     const durationA = Math.max(...eventsA.map(e => e.time + e.duration));
                     const durationB = Math.max(...eventsB.map(e => e.time + e.duration));
                     const maxDuration = Math.max(durationA, durationB) + 0.1;
-                    setTimeout(stopPlayback, maxDuration * 1000);
+                    stopTimer = setTimeout(stopPlayback, maxDuration * 1000);
 
                 }} catch (error) {{
                     updateStatus('Error: ' + error.message, 'red');
@@ -259,6 +276,12 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
         }}
 
         function stopPlayback() {{
+            // Clear stop timer
+            if (stopTimer) {{
+                clearTimeout(stopTimer);
+                stopTimer = null;
+            }}
+
             // Dispose Tone.Part instances only (keep synth)
             if (partA) {{
                 partA.dispose();
@@ -279,7 +302,7 @@ def midi_player_component(notes_a, notes_b=None, label="Play MIDI", ticks_per_be
     </script>
     """
 
-    components.html(html_code, height=120)
+    components.html(html_code, height=180)
 
 
 # ================================================================
