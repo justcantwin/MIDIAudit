@@ -2,22 +2,14 @@ import io
 import math
 from typing import List, Dict, Tuple, Set, Optional
 import os
-import functools
 import hashlib
 import platform
-
-# Audio synthesis now handled server-side in Python
+from collections import defaultdict
 
 import mido
 import numpy as np
-from collections import defaultdict
-
-# Audio rendering dependencies
 import pretty_midi
 import soundfile as sf
-import io
-import hashlib
-import os
 
 from models import Match, LargeMatch, TimeSignature
 from suffix_automaton import SuffixAutomaton
@@ -30,7 +22,9 @@ class MIDIAuditor:
         quantize_beats: float = 0.25,
         large_similarity: float = 0.90,
         motif_similarity: float = 0.70,
+        verbose: bool = True,  # Optional logging flag
     ):
+        self.verbose = verbose
         self.logs: List[str] = []
 
         self.mid = mido.MidiFile(file=file_stream)
@@ -39,13 +33,13 @@ class MIDIAuditor:
         self.motif_similarity = motif_similarity
         self.quantize_ticks = int(self.ticks_per_beat * quantize_beats)
 
-        # NEW: Caching
+        # Caching
         self._cache = {}
 
-        # NEW: Dynamic tempo and time signature
+        # Tempo and time signatures
         self.tempos = self._extract_tempos()
         self.time_signatures = self._extract_time_signatures()
-        self._tempo = self.tempos[0] if self.tempos else 500000  # Default
+        self._tempo = self.tempos[0] if self.tempos else 500000
 
         self.notes = self._extract_notes()
         self.pitch_array = np.array([n["pitch"] for n in self.notes], dtype=np.int16)
@@ -55,21 +49,16 @@ class MIDIAuditor:
         self.ticks_per_bar = self._compute_average_ticks_per_bar()
         self.bar_features, self.num_bars = self._build_bar_features()
 
+    def _log(self, msg: str):
+        if self.verbose:
+            self.logs.append(msg)
+
     def _extract_tempos(self) -> List[int]:
-        """Extract all tempo changes from the MIDI file."""
-        tempos = []
-        for track in self.mid.tracks:
-            for msg in track:
-                if msg.type == "set_tempo":
-                    tempos.append(msg.tempo)
-        if not tempos:
-            tempos = [500000]  # Default 120 BPM
-        return tempos
+        tempos = [msg.tempo for track in self.mid.tracks for msg in track if msg.type == "set_tempo"]
+        return tempos or [500000]
 
     def _extract_time_signatures(self) -> List[TimeSignature]:
-        """Extract time signatures and compute ticks per bar."""
         signatures = []
-        current_ticks_per_bar = self.ticks_per_beat * 4  # Default 4/4
         for track in self.mid.tracks:
             abs_tick = 0
             for msg in track:
@@ -81,24 +70,19 @@ class MIDIAuditor:
                         ticks_per_bar=int(self.ticks_per_beat * msg.numerator * 4 / msg.denominator)
                     )
                     signatures.append((abs_tick, ts))
-                    current_ticks_per_bar = ts.ticks_per_bar
         if not signatures:
             signatures = [(0, TimeSignature(4, 4, self.ticks_per_beat * 4))]
         return signatures
 
     def _compute_average_ticks_per_bar(self) -> int:
-        """Compute average ticks per bar for simplicity."""
-        if not self.time_signatures:
-            return self.ticks_per_beat * 4
         total_ticks = sum(ts.ticks_per_bar for _, ts in self.time_signatures)
-        return total_ticks // len(self.time_signatures)
+        return total_ticks // len(self.time_signatures) if self.time_signatures else self.ticks_per_beat * 4
 
     def _extract_notes(self) -> List[Dict]:
-        """Improved note extraction: handle all tracks, preserve micro-timing."""
         all_notes = []
         for i, track in enumerate(self.mid.tracks):
             abs_tick = 0
-            active_notes = {}  # (channel, note) -> note dict
+            active_notes = {}
             count_note_on = 0
             count_note_off = 0
             for msg in track:
@@ -107,7 +91,7 @@ class MIDIAuditor:
                     note = {
                         "pitch": msg.note,
                         "tick": abs_tick,
-                        "end_tick": abs_tick + self.ticks_per_beat,  # default duration: 1 beat
+                        "end_tick": abs_tick + self.ticks_per_beat,
                         "velocity": msg.velocity,
                         "duration": self.ticks_per_beat
                     }
@@ -122,19 +106,17 @@ class MIDIAuditor:
                         note["duration"] = abs_tick - note["tick"]
                         del active_notes[key]
                         count_note_off += 1
-            self.logs.append(f"Track {i}: {len(track)} msgs, {count_note_on} note_ons, {count_note_off} matched note_offs, {len(active_notes)} unmatched active")
+            self._log(f"Track {i}: {len(track)} msgs, {count_note_on} note_ons, {count_note_off} matched note_offs, {len(active_notes)} unmatched active")
 
-        # Sort by start tick
         all_notes.sort(key=lambda n: n["tick"])
-        self.logs.append(f"Extracted {len(all_notes)} notes from {len(self.mid.tracks)} tracks")
+        self._log(f"Extracted {len(all_notes)} notes from {len(self.mid.tracks)} tracks")
         return all_notes
 
     def _build_suffix_automaton(self):
-        """Cached suffix automaton build."""
         cache_key = hashlib.md5(self.pitch_array.tobytes()).hexdigest()
         if cache_key in self._cache:
             self.sam = self._cache[cache_key]
-            self.logs.append("Loaded suffix automaton from cache")
+            self._log("Loaded suffix automaton from cache")
             return
 
         self.sam = SuffixAutomaton()
@@ -143,43 +125,37 @@ class MIDIAuditor:
         self.sam.finalize_occurrences()
 
         self._cache[cache_key] = self.sam
-        self.logs.append("Built suffix automaton")
+        self._log("Built suffix automaton")
 
         best_len, _ = self.sam.longest_repeated_substring(min_occ=2)
         if best_len > 0:
-            self.logs.append(f"Suffix automaton: longest repeat = {best_len} notes")
+            self._log(f"Suffix automaton: longest repeat = {best_len} notes")
 
     def _build_bar_features(self) -> Tuple[np.ndarray, int]:
-        """Cached bar features with improved chroma."""
         if not self.notes:
             return np.zeros((0, 12), dtype=np.float32), 0
 
-        # Use average ticks per bar
         bar_ticks = self.ticks_per_bar
         bar_indices = [n["tick"] // bar_ticks for n in self.notes]
         num_bars = int(max(bar_indices)) + 1 if bar_indices else 0
 
-        # Enhanced chroma: include velocity and duration weights
         chroma = np.zeros((num_bars, 12), dtype=np.float32)
-        rhythm = np.zeros((num_bars, 4), dtype=np.float32)  # Quarter note positions
+        rhythm = np.zeros((num_bars, 4), dtype=np.float32)
 
         for note, bar in zip(self.notes, bar_indices):
             pitch_class = note["pitch"] % 12
-            weight = note["velocity"] / 127.0 * math.sqrt(note["duration"])  # Weighted by velocity and duration
+            weight = note["velocity"] / 127.0 * math.sqrt(note["duration"])
             chroma[bar, pitch_class] += weight
-
-            # Rhythm: position within bar (simplified to quarters)
             pos = (note["tick"] % bar_ticks) / bar_ticks
             quarter = int(pos * 4)
             if quarter < 4:
                 rhythm[bar, quarter] += weight
 
-        # Combine features
         features = np.hstack([chroma, rhythm])
         norms = np.linalg.norm(features, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
 
-        self.logs.append(f"Built enhanced features for {num_bars} bars")
+        self._log(f"Built enhanced features for {num_bars} bars")
         return features / norms, num_bars
 
     def _find_exact_repeats_in_range(
@@ -384,7 +360,7 @@ class MIDIAuditor:
         min_motif_length: int = 4,
         min_large_bars: int = 4,
         max_results: int = 100,
-        allow_overlaps: bool = False,  # NEW
+        allow_overlapping_repeats: bool = False,
     ) -> Tuple[List[LargeMatch], List[Match]]:
         """
         Complete hierarchical decomposition:
@@ -398,11 +374,11 @@ class MIDIAuditor:
         large_matches = self._find_large_scale_repeats(
             min_bars=min_large_bars,
             max_matches=max_results // 2,
-            allow_overlaps=allow_overlaps  # PASS THROUGH
+            allow_overlapping_repeats=allow_overlapping_repeats
         )
 
         # Phase 2: Hierarchical motif detection (skip if overlaps allowed)
-        if allow_overlaps:
+        if allow_overlapping_repeats:
             motif_matches = []
             self.logs.append("Skipping motif detection (overlaps enabled)")
         else:
@@ -426,7 +402,7 @@ class MIDIAuditor:
         self,
         min_bars: int,
         max_matches: int,
-        allow_overlaps: bool = False,
+        allow_overlapping_repeats: bool = False,
     ) -> List[LargeMatch]:
         """
         State-of-the-art large-scale repeat detection.
@@ -440,6 +416,12 @@ class MIDIAuditor:
         if B < 2 * min_bars:
             self.logs.append(f"Skipping large-scale: only {B} bars")
             return []
+
+        # Logging for overlap mode
+        if allow_overlapping_repeats:
+            self.logs.append("Large-scale: allowing overlapping repeats (legacy mode)")
+        else:
+            self.logs.append("Large-scale: filtering overlapping repeats (strict mode)")
 
         # ------------------------------------------------------------"
         # 1. Compute similarity matrix
@@ -498,6 +480,10 @@ class MIDIAuditor:
             a0 = cand["start_a"]
             b0 = cand["start_b"]
             L = cand["length"]
+
+            # Reject overlapping repeats if not allowed
+            if not allow_overlapping_repeats and (a0 + L - 1 >= b0) and (b0 + L - 1 >= a0):
+                continue
 
             bars_a = np.arange(a0, a0 + L)
             bars_b = np.arange(b0, b0 + L)
