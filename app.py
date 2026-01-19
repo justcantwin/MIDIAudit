@@ -423,23 +423,14 @@ if uploaded_file:
 
                     audio_player_component(notes_a, notes_b, "Segment A", auditor.ticks_per_beat, auditor._tempo, lm.id)
 
-                    start_tick_a = lm.start_bar_a * auditor.ticks_per_bar
-                    end_tick_a   = (lm.start_bar_a + lm.length_bars) * auditor.ticks_per_bar
-                    trimmed_notes_a = auditor.trim_notes_to_pattern(notes_a, start_tick_a, end_tick_a)
-
-                    start_tick_b = lm.start_bar_b * auditor.ticks_per_bar
-                    end_tick_b   = (lm.start_bar_b + lm.length_bars) * auditor.ticks_per_bar
-                    trimmed_notes_b = auditor.trim_notes_to_pattern(notes_b, start_tick_b, end_tick_b)
-
                     dl1, dl2 = st.columns(2)
                     with dl1:
-                        st.download_button("Download Segment A (MIDI)", auditor.export_segment_as_midi(trimmed_notes_a), f"large_{lm.id}_A.mid", "audio/midi")
+                        st.download_button("Download Segment A (MIDI)", auditor.export_segment_as_midi(notes_a), f"large_{lm.id}_A.mid", "audio/midi")
                     with dl2:
-                        st.download_button("Download Segment B (MIDI)", auditor.export_segment_as_midi(trimmed_notes_b), f"large_{lm.id}_B.mid", "audio/midi")
+                        st.download_button("Download Segment B (MIDI)", auditor.export_segment_as_midi(notes_b), f"large_{lm.id}_B.mid", "audio/midi")
 
         else:
             st.info("No large-scale repeats detected with current settings.")
-
 
     # -----------------------
     # TAB 3: Motif Analysis
