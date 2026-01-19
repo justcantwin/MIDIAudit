@@ -325,9 +325,9 @@ if uploaded_file:
     # Sidebar
     st.sidebar.title("⚙️ Analysis Settings")
     with st.sidebar.expander("🔍 Detection Parameters", expanded=True):
-        large_sim = st.slider("Large Section Similarity", 0.70,0.98,0.90,0.02)
+        large_sim = st.slider("Large Section Similarity", 0.70,0.98,0.70,0.02)
         motif_sim = st.slider("Motif Similarity (unused)", 0.60,0.98,0.70,0.02)
-        min_large_bars = st.slider("Min Section Length (bars)", 2,16,4)
+        min_large_bars = st.slider("Min Section Length (bars)", 2,16,2)
         min_motif_notes = st.slider("Min Motif Length (notes)", 3,16,4)
     with st.sidebar.expander("🔧 Advanced Options"):
         allow_overlapping_repeats = st.checkbox("Allow overlapping repeats (legacy mode)", value=False)
