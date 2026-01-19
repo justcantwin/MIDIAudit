@@ -357,7 +357,6 @@ if uploaded_file:
     status_text.text("✅ Analysis complete!")
 
     # Audio cache
-    init_audio_cache()
     initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches)
 
     sections = auditor.label_sections(large_matches)
