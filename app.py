@@ -16,6 +16,13 @@ from visualization import (
     plot_timeline_with_overlaps,
     plot_piano_roll
 )
+from analyze_midi import (
+    CoverageOptimizedHybridAlgorithm,
+    SuffixAutomatonAlgorithm,
+    QualityOptimizedHybridAlgorithm,
+    DynamicUltraHybridAlgorithm
+)
+from models import Match
 
 # Import for error handling
 try:
@@ -325,10 +332,24 @@ if uploaded_file:
     # Sidebar
     st.sidebar.title("⚙️ Analysis Settings")
     with st.sidebar.expander("🔍 Detection Parameters", expanded=True):
-        large_sim = st.slider("Large Section Similarity", 0.70,0.98,0.70,0.02)
+        large_sim = st.slider("Large Section Similarity", 0.30,0.98,0.30,0.02)
         motif_sim = st.slider("Motif Similarity (unused)", 0.60,0.98,0.70,0.02)
-        min_large_bars = st.slider("Min Section Length (bars)", 2,16,2)
-        min_motif_notes = st.slider("Min Motif Length (notes)", 3,16,4)
+        min_large_bars = st.slider("Min Section Length (bars)", 1,16,1)
+        min_motif_notes = st.slider("Min Motif Length (notes)", 3,16,3)
+    with st.sidebar.expander("🤖 Pattern Recognition Algorithm", expanded=True):
+        algorithm_options = {
+            "Coverage-Optimized Hybrid": "coverage_optimized_hybrid",
+            "Suffix Automaton": "suffix_automaton",
+            "Quality-Optimized Hybrid": "quality_optimized_hybrid",
+            "Dynamic Ultra Hybrid": "dynamic_ultra_hybrid"
+        }
+        selected_algorithm = st.radio(
+            "Select Algorithm:",
+            options=list(algorithm_options.keys()),
+            index=0,  # Coverage-Optimized Hybrid as default
+            help="Choose the pattern recognition algorithm. Coverage-Optimized Hybrid is recommended for best overall coverage."
+        )
+        algorithm_key = algorithm_options[selected_algorithm]
     with st.sidebar.expander("🔧 Advanced Options"):
         allow_overlapping_repeats = st.checkbox("Allow overlapping repeats (legacy mode)", value=False)
         per_layer_features = st.checkbox("Per-Layer Features", value=False)
@@ -345,14 +366,46 @@ if uploaded_file:
     progress_bar.progress(50)
     status_text.text("🔍 Finding patterns...")
 
+    # Use selected algorithm for pattern detection
+    if algorithm_key == "coverage_optimized_hybrid":
+        algorithm = CoverageOptimizedHybridAlgorithm()
+    elif algorithm_key == "suffix_automaton":
+        algorithm = SuffixAutomatonAlgorithm()
+    elif algorithm_key == "quality_optimized_hybrid":
+        algorithm = QualityOptimizedHybridAlgorithm()
+    elif algorithm_key == "dynamic_ultra_hybrid":
+        algorithm = DynamicUltraHybridAlgorithm()
+    else:
+        # Fallback to default
+        algorithm = CoverageOptimizedHybridAlgorithm()
+
+    # Run the selected algorithm
+    algorithm_result = algorithm.analyze(auditor)
+
+    # Extract motif matches from algorithm result and convert to Match objects
+    raw_motif_matches = algorithm_result.get('motif_matches', [])
+    motif_matches = []
+    for match_dict in raw_motif_matches:
+        # Convert dictionary to Match object
+        match_obj = Match(
+            id=match_dict.get('id', 0),
+            length=match_dict.get('length', 0),
+            occurrences=match_dict.get('occurrences', []),
+            similarity=match_dict.get('similarity', 0.0),  # Default similarity if not provided
+            bars=[]  # Empty bars list, could be calculated later if needed
+        )
+        motif_matches.append(match_obj)
+
+    # For large-scale analysis, still use the original method
+    # (The new algorithms focus on motif detection)
     auditor.occupied_indices = set()
-    large_matches, motif_matches = auditor.find_all_patterns(
+    large_matches, _ = auditor.find_all_patterns(
         min_motif_length=min_motif_notes,
         min_large_bars=min_large_bars,
         max_results=100,
         allow_overlapping_repeats=allow_overlapping_repeats
     )
-    motif_matches = auditor.postprocess_motifs(motif_matches)
+    # Note: We ignore the motif_matches from find_all_patterns since we're using the algorithm
     progress_bar.progress(100)
     status_text.text("✅ Analysis complete!")
 

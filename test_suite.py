@@ -212,5 +212,132 @@ class MIDIAuditorTestSuite(unittest.TestCase):
 
         print(f"Full song test: {len(large_matches)} large matches, {len(motif_matches)} motifs, {coverage:.1%} coverage")
 
+def optimize_parameters():
+    """Find optimal parameter settings by testing across all scenarios."""
+    import time
+
+    # Parameter ranges to test
+    large_sim_range = [0.60, 0.70, 0.75, 0.80, 0.85, 0.90]
+    min_bars_range = [2, 3, 4, 5, 6]
+    min_motif_range = [3, 4, 5, 6]
+
+    # Test scenarios
+    scenarios = [
+        ("velocity_test", lambda: MIDITestGenerator.create_velocity_test()),
+        ("boundary_test", lambda: MIDITestGenerator.create_boundary_alignment_test()),
+        ("interchangeability_test", lambda: MIDITestGenerator.create_channel_mismatch_test()),
+        ("full_song_test", lambda: MIDITestGenerator.create_full_song_test()),
+    ]
+
+    results = []
+
+    print("🔍 Starting parameter optimization...")
+    print(f"Testing {len(large_sim_range)} × {len(min_bars_range)} × {len(min_motif_range)} × {len(scenarios)} = {len(large_sim_range) * len(min_bars_range) * len(min_motif_range) * len(scenarios)} combinations")
+
+    total_combinations = len(large_sim_range) * len(min_bars_range) * len(min_motif_range)
+    current_combo = 0
+
+    for large_sim in large_sim_range:
+        for min_bars in min_bars_range:
+            for min_motif in min_motif_range:
+                current_combo += 1
+                print(f"\n📊 Testing combination {current_combo}/{total_combinations}: large_sim={large_sim}, min_bars={min_bars}, min_motif={min_motif}")
+
+                scenario_results = []
+
+                for scenario_name, generator in scenarios:
+                    try:
+                        mid = generator()
+                        midi_bytes = MIDITestGenerator.get_midi_bytes(mid)
+
+                        start_time = time.time()
+                        auditor = MIDIAuditor(io.BytesIO(midi_bytes), large_similarity=large_sim)
+                        large_matches, motif_matches = auditor.find_all_patterns(
+                            min_large_bars=min_bars,
+                            min_motif_length=min_motif
+                        )
+                        processing_time = time.time() - start_time
+
+                        total_notes = len(auditor.notes)
+                        occupied_notes = len(auditor.occupied_indices)
+                        coverage = occupied_notes / total_notes if total_notes > 0 else 0
+
+                        scenario_results.append({
+                            'scenario': scenario_name,
+                            'large_matches': len(large_matches),
+                            'motif_matches': len(motif_matches),
+                            'coverage': coverage,
+                            'processing_time': processing_time,
+                            'total_notes': total_notes
+                        })
+
+                    except Exception as e:
+                        print(f"❌ Error in {scenario_name}: {e}")
+                        scenario_results.append({
+                            'scenario': scenario_name,
+                            'error': str(e)
+                        })
+
+                # Calculate aggregate scores
+                valid_scenarios = [r for r in scenario_results if 'error' not in r]
+
+                if valid_scenarios:
+                    avg_coverage = sum(r['coverage'] for r in valid_scenarios) / len(valid_scenarios)
+                    total_large_matches = sum(r['large_matches'] for r in valid_scenarios)
+                    total_motif_matches = sum(r['motif_matches'] for r in valid_scenarios)
+                    avg_processing_time = sum(r['processing_time'] for r in valid_scenarios) / len(valid_scenarios)
+
+                    # Scoring: prioritize coverage, then reasonable match counts, then speed
+                    score = (
+                        avg_coverage * 100 +  # Coverage is most important (0-100)
+                        min(total_large_matches, 20) * 2 +  # Reasonable large matches (0-40)
+                        min(total_motif_matches, 30) * 1 +  # Reasonable motifs (0-30)
+                        max(0, 2.0 - avg_processing_time) * 5  # Speed bonus (0-10)
+                    )
+
+                    results.append({
+                        'large_similarity': large_sim,
+                        'min_large_bars': min_bars,
+                        'min_motif_length': min_motif,
+                        'score': score,
+                        'avg_coverage': avg_coverage,
+                        'total_large_matches': total_large_matches,
+                        'total_motif_matches': total_motif_matches,
+                        'avg_processing_time': avg_processing_time,
+                        'scenario_results': scenario_results
+                    })
+
+                    print(f"   Score: {score:.1f}, Coverage: {avg_coverage:.1%}, Large: {total_large_matches}, Motifs: {total_motif_matches}, Time: {avg_processing_time:.3f}s")
+
+    # Sort by score and display top results
+    results.sort(key=lambda x: x['score'], reverse=True)
+
+    print("\n🏆 TOP 5 OPTIMAL PARAMETER SETTINGS:")
+    for i, result in enumerate(results[:5], 1):
+        print(f"\n{i}. Score: {result['score']:.1f}")
+        print(f"   Large Similarity: {result['large_similarity']}")
+        print(f"   Min Large Bars: {result['min_large_bars']}")
+        print(f"   Min Motif Length: {result['min_motif_length']}")
+        print(f"   Avg Coverage: {result['avg_coverage']:.1%}")
+
+    # Return best parameters
+    if results:
+        best = results[0]
+        return {
+            'large_similarity': best['large_similarity'],
+            'min_large_bars': best['min_large_bars'],
+            'min_motif_length': best['min_motif_length']
+        }
+    return None
+
 if __name__ == "__main__":
-    unittest.main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--optimize":
+        optimal = optimize_parameters()
+        if optimal:
+            print("\n🎯 OPTIMAL PARAMETERS FOUND:")
+            print(f"Large Similarity: {optimal['large_similarity']}")
+            print(f"Min Large Bars: {optimal['min_large_bars']}")
+            print(f"Min Motif Length: {optimal['min_motif_length']}")
+    else:
+        unittest.main()
