@@ -95,7 +95,8 @@ class MIDIAuditor:
                         "tick": abs_tick,
                         "end_tick": abs_tick + self.ticks_per_beat,
                         "velocity": msg.velocity,
-                        "duration": self.ticks_per_beat
+                        "duration": self.ticks_per_beat,
+                        "channel": msg.channel
                     }
                     all_notes.append(note)
                     active_notes[(msg.channel, msg.note)] = note
