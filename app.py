@@ -17,10 +17,6 @@ from visualization import (
     plot_piano_roll
 )
 
-# Top-level Audix declaration
-from streamlit_advanced_audio import audix
-audix_player = audix  # single shared instance
-
 # Import for error handling
 try:
     from tornado.websocket import WebSocketClosedError
@@ -32,13 +28,19 @@ except ImportError:
 # =========================
 # SESSION STATE INIT
 # =========================
-if 'audio_cache' not in st.session_state:
-    st.session_state.audio_cache = {}
-
-def init_audio_cache():
-    """Initialize audio cache in session state safely."""
-    if 'audio_cache' not in st.session_state:
+def init_session_state():
+    """Initialize all session state variables before any component rendering."""
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = True
         st.session_state.audio_cache = {}
+        st.rerun()
+
+# CRITICAL: Call before ANY other code (including imports that might trigger components)
+init_session_state()
+
+# Top-level Audix declaration
+from streamlit_advanced_audio import audix
+audix_player = audix  # single shared instance
 
 def calculate_audio_duration(audio_bytes):
     """Calculate duration from WAV audio bytes."""
@@ -191,10 +193,8 @@ def render_mixed_audio(notes_a, notes_b, ticks_per_beat, tempo):
 
 def initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches):
     """Pre-generate and cache all audio during initialization phase."""
-    # Use safe session state access
-    audio_cache = st.session_state.get('audio_cache', {})
-    if 'audio_cache' not in st.session_state:
-        st.session_state.audio_cache = audio_cache
+    # Safe access - already guaranteed to exist by init_session_state()
+    audio_cache = st.session_state.audio_cache
 
     for lm in large_matches:
         # Segment A
@@ -227,7 +227,7 @@ def initialize_audio_cache_for_analysis(auditor, large_matches, motif_matches):
                 'duration': calculate_audio_duration(wav_bytes)
             }
 
-    # Update session state with the complete cache
+    # Direct assignment - no need for defensive get()
     st.session_state.audio_cache = audio_cache
 
 # =========================
