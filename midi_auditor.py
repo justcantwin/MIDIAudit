@@ -5,6 +5,7 @@ import os
 import hashlib
 import platform
 from collections import defaultdict
+from difflib import SequenceMatcher
 
 import mido
 import numpy as np
@@ -79,6 +80,27 @@ class MIDIAuditor:
     def _compute_average_ticks_per_bar(self) -> int:
         total_ticks = sum(ts.ticks_per_bar for _, ts in self.time_signatures)
         return total_ticks // len(self.time_signatures) if self.time_signatures else self.ticks_per_beat * 4
+
+    def tick_to_bar(self, tick: int) -> int:
+        """
+        Block: Time Map Logic
+        Convert tick position to bar number, handling time signature changes.
+        """
+        if not self.time_signatures:
+            return tick // (self.ticks_per_beat * 4)
+
+        current_bar = 0
+        for i, (ts_tick, ts) in enumerate(self.time_signatures):
+            next_tick = self.time_signatures[i+1][0] if i+1 < len(self.time_signatures) else float('inf')
+
+            if tick < next_tick:
+                bars_into_section = (tick - ts_tick) // ts.ticks_per_bar
+                return current_bar + bars_into_section
+
+            bars_in_section = (next_tick - ts_tick) // ts.ticks_per_bar
+            current_bar += bars_in_section
+
+        return current_bar
 
     def _extract_notes(self) -> List[Dict]:
         all_notes = []
@@ -162,7 +184,7 @@ class MIDIAuditor:
 
         for note, bar in zip(self.notes, bar_indices):
             pitch_class = note["pitch"] % 12
-            weight = note["velocity"] / 127.0 * math.sqrt(note["duration"])
+            weight = math.sqrt(note["duration"])  # Remove velocity component to allow matching across different dynamics
             if per_layer:
                 idx = pitch_class + 12 * note["channel"]
             else:
@@ -175,7 +197,9 @@ class MIDIAuditor:
             if quarter < 4:
                 rhythm[bar, quarter] += weight
 
-        features = np.hstack([chroma, rhythm])
+        # For large-scale matching, rhythm can prevent detection of similar patterns
+        # that are not aligned to bar boundaries. Use only chroma for now.
+        features = chroma
         norms = np.linalg.norm(features, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
 
@@ -447,10 +471,15 @@ class MIDIAuditor:
         else:
             self.logs.append("Large-scale: filtering overlapping repeats (strict mode)")
 
+        # Use dynamic value from MIDI header for time signature awareness
+        bar_ticks = self.ticks_per_bar  # Use dynamic value from MIDI header
+
         # ------------------------------------------------------------"
         # 1. Compute similarity matrix
-        # ------------------------------------------------------------"
+        # ------------------------------------------------------------
         S = features @ features.T
+
+
 
         # ------------------------------------------------------------"
         # 2. Extract ALL diagonals for offsets d = 1..B-1
@@ -532,10 +561,15 @@ class MIDIAuditor:
             if len(results) >= max_matches:
                 break
 
-        # ------------------------------------------------------------"
-        # 5. Mark occupied note indices (same as before)
-        # ------------------------------------------------------------"
-        bar_ticks = self.ticks_per_beat * 4
+        # ------------------------------------------------------------
+        # 5. Align bar matches to note boundaries
+        # ------------------------------------------------------------
+        results = self._align_bar_matches_to_notes(results)
+
+        # ------------------------------------------------------------
+        # 7. Mark occupied note indices (same as before)
+        # ------------------------------------------------------------
+        bar_ticks = self.ticks_per_bar  # Use dynamic value from MIDI header
 
         for lm in results:
             for bar_offset in range(lm.length_bars):
@@ -547,9 +581,9 @@ class MIDIAuditor:
                         if start_tick <= note["tick"] < end_tick:
                             self.occupied_indices.add(idx)
 
-        # ------------------------------------------------------------"
-        # 6. Logging
-        # ------------------------------------------------------------"
+        # ------------------------------------------------------------
+        # 8. Logging
+        # ------------------------------------------------------------
         total_bars = sum(lm.length_bars * 2 for lm in results)
         coverage = (total_bars / B) * 100 if B > 0 else 0
         self.logs.append(
@@ -736,16 +770,27 @@ class MIDIAuditor:
             return int(mido.second2tick(sec, self.ticks_per_beat, self._tempo))
 
         for lm in large_matches:
-            start_a_sec, end_a_sec = self.bar_range_to_seconds(lm.start_bar_a, lm.length_bars)
-            start_b_sec, end_b_sec = self.bar_range_to_seconds(lm.start_bar_b, lm.length_bars)
+            # Problem: Markers currently use bar approximations.
+            # Fix: Export MIDI markers using exact min(tick) and max(tick) of the validated notes within a match.
+            notes_a = self.notes_in_bar_range(lm.start_bar_a, lm.length_bars)
+            notes_b = self.notes_in_bar_range(lm.start_bar_b, lm.length_bars)
 
-            for sec, label in [
-                (start_a_sec, f"L{lm.id}A Start"),
-                (end_a_sec, f"L{lm.id}A End"),
-                (start_b_sec, f"L{lm.id}B Start"),
-                (end_b_sec, f"L{lm.id}B End"),
+            if not notes_a or not notes_b:
+                continue
+
+            # Use exact note boundaries instead of bar approximations
+            start_a_tick = min(n["tick"] for n in notes_a)
+            end_a_tick = max(n["tick"] for n in notes_a)
+            start_b_tick = min(n["tick"] for n in notes_b)
+            end_b_tick = max(n["tick"] for n in notes_b)
+
+            for tick, label in [
+                (start_a_tick, f"L{lm.id}A Start"),
+                (end_a_tick, f"L{lm.id}A End"),
+                (start_b_tick, f"L{lm.id}B Start"),
+                (end_b_tick, f"L{lm.id}B End"),
             ]:
-                track.append(MetaMessage("marker", text=label, time=sec_to_tick(sec)))
+                track.append(MetaMessage("marker", text=label, time=tick))
 
         if motif_matches:
             for m in motif_matches:
@@ -816,6 +861,114 @@ class MIDIAuditor:
         start_tick = start_bar * bar_ticks
         end_tick = (start_bar + length_bars) * bar_ticks
         return [n for n in self.notes if start_tick <= n["tick"] < end_tick]
+
+    def _score_performance_quality(self, notes: List[Dict]) -> float:
+        """
+        Block: Scoring
+        Analyze segments to recommend which take to "Keep."
+        """
+        if not notes:
+            return 0.0
+
+        sixteenth = self.ticks_per_beat // 4
+
+        # Timing Tightness: Variance from the 16th note grid
+        timing_errors = [abs(n["tick"] % sixteenth) for n in notes]
+        timing_err = np.mean(timing_errors)
+        timing_score = max(0.0, 1.0 - (timing_err / (sixteenth / 2)))
+
+        # Velocity Consistency: Standard deviation of velocities
+        velocities = [n["velocity"] for n in notes]
+        vel_std = np.std(velocities) if len(velocities) > 1 else 0
+        vel_consistency = max(0.0, 1.0 - (vel_std / 64.0))  # Normalize by typical velocity range
+
+        # Note Density: Richness of the arrangement
+        total_notes = len(notes)
+        duration_ticks = max(n["tick"] + n["duration"] for n in notes) - min(n["tick"] for n in notes)
+        duration_bars = duration_ticks / self.ticks_per_bar if self.ticks_per_bar > 0 else 1.0
+        density_score = min(1.0, total_notes / (duration_bars * 10))  # Normalize by typical density
+
+        # Combine metrics with recommended weights
+        return (0.4 * timing_score) + (0.3 * vel_consistency) + (0.3 * density_score)
+
+    def _validate_interchangeability(self, lm: LargeMatch) -> bool:
+        """
+        Block: Validation
+        Ensure matches aren't just similar, but technically swappable in a DAW.
+        """
+        notes_a = self.notes_in_bar_range(lm.start_bar_a, lm.length_bars)
+        notes_b = self.notes_in_bar_range(lm.start_bar_b, lm.length_bars)
+
+        # 1. Channel Match: Piano cannot be swapped for Strings
+        if set(n["channel"] for n in notes_a) != set(n["channel"] for n in notes_b):
+            return False
+
+        # 2. Pitch/Rhythm Similarity: Use SequenceMatcher for fuzzy verification
+        from difflib import SequenceMatcher
+        p_ratio = SequenceMatcher(None, [n["pitch"] for n in notes_a], [n["pitch"] for n in notes_b]).ratio()
+
+        return p_ratio >= 0.85  # Threshold for interchangeability
+
+    def _align_bar_matches_to_notes(self, results: List[LargeMatch]) -> List[LargeMatch]:
+        """Refine bar-level matches to precise note boundaries."""
+        aligned = []
+
+        for lm in results:
+            # First validate interchangeability
+            if not self._validate_interchangeability(lm):
+                continue
+
+            notes_a = self.notes_in_bar_range(lm.start_bar_a, lm.length_bars)
+            notes_b = self.notes_in_bar_range(lm.start_bar_b, lm.length_bars)
+
+            if not notes_a or not notes_b:
+                aligned.append(lm)
+                continue
+
+            # Extract pitch sequences
+            pitches_a = [n["pitch"] for n in notes_a]
+            pitches_b = [n["pitch"] for n in notes_b]
+
+            # Find longest common subsequence alignment
+            matcher = SequenceMatcher(None, pitches_a, pitches_b, autojunk=False)
+            match = matcher.find_longest_match(0, len(pitches_a), 0, len(pitches_b))
+
+            if match.size < 4:  # Require at least 4 matching notes
+                aligned.append(lm)
+                continue
+
+            # Logic: Find the Longest Common Subsequence (LCS) of pitches
+            # Action: Trim LargeMatch start/end ticks to the boundaries of that LCS
+
+            # Compute new bar boundaries from aligned note ranges
+            first_note_a = notes_a[match.a]
+            last_note_a = notes_a[match.a + match.size - 1]
+            first_note_b = notes_b[match.b]
+            last_note_b = notes_b[match.b + match.size - 1]
+
+            new_start_bar_a = first_note_a["tick"] // self.ticks_per_bar
+            new_end_bar_a = (last_note_a["tick"] + last_note_a["duration"]) // self.ticks_per_bar
+            new_start_bar_b = first_note_b["tick"] // self.ticks_per_bar
+            new_end_bar_b = (last_note_b["tick"] + last_note_b["duration"]) // self.ticks_per_bar
+
+            new_length_a = new_end_bar_a - new_start_bar_a + 1
+            new_length_b = new_end_bar_b - new_start_bar_b + 1
+            new_length = min(new_length_a, new_length_b)
+
+            if new_length < 2:  # Reject if too short
+                aligned.append(lm)
+                continue
+
+            # Create refined match
+            aligned.append(LargeMatch(
+                id=lm.id,
+                start_bar_a=new_start_bar_a,
+                start_bar_b=new_start_bar_b,
+                length_bars=new_length,
+                avg_similarity=lm.avg_similarity,
+            ))
+
+        return aligned
 
     def motif_signature(self, motif):
         """
