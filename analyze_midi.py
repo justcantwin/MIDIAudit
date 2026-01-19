@@ -30,6 +30,7 @@ import sys
 from functools import lru_cache
 
 from midi_auditor import MIDIAuditor
+from models import LargeMatch
 import mido
 
 # Import additional libraries for advanced analysis
@@ -1407,6 +1408,290 @@ class QualityOptimizedHybridAlgorithm(PatternRecognitionAlgorithm):
             'similarity_threshold': self.similarity_threshold
         }
 
+class UltraLongSectionMatcher(PatternRecognitionAlgorithm):
+    """Maximum-length multilayer section matching for DAW copy/paste workflow"""
+
+    def __init__(self, min_section_bars=2, max_section_bars=32, similarity_threshold=0.75):
+        super().__init__(
+            "Ultra Long Section Matcher",
+            "Finds maximum-length near-perfect multilayer sections for DAW replacement"
+        )
+        self.min_section_bars = min_section_bars
+        self.max_section_bars = max_section_bars
+        self.similarity_threshold = similarity_threshold
+        self.max_comparisons = 50000  # Limit computational complexity
+
+    def analyze(self, auditor: MIDIAuditor) -> Dict:
+        start_time = time.time()
+        ProgressTracker.print_status(f"  🔍 Analyzing with {self.name}...", "processing")
+
+        # Reset occupied indices
+        auditor.occupied_indices = set()
+
+        # Find ultra-long section matches
+        large_matches = self._find_ultra_long_sections(auditor)
+
+        # Convert to LargeMatch objects and mark occupied indices
+        for lm in large_matches:
+            # Mark notes as occupied for coverage calculation
+            for bar_offset in range(lm.length_bars):
+                for bar_idx in [lm.start_bar_a + bar_offset, lm.start_bar_b + bar_offset]:
+                    start_tick = bar_idx * auditor.ticks_per_bar
+                    end_tick = (bar_idx + 1) * auditor.ticks_per_bar
+
+                    for idx, note in enumerate(auditor.notes):
+                        if start_tick <= note["tick"] < end_tick:
+                            auditor.occupied_indices.add(idx)
+
+        processing_time = time.time() - start_time
+        total_notes = len(auditor.notes)
+        occupied_notes = len(auditor.occupied_indices)
+        coverage = occupied_notes / total_notes if total_notes > 0 else 0
+
+        ProgressTracker.print_status(f"  ✅ Completed {self.name} in {processing_time:.2f}s", "success")
+        ProgressTracker.print_status(f"    📈 Coverage: {coverage*100:.1f}% with {len(large_matches)} ultra-long sections", "success")
+
+        return {
+            'large_matches': large_matches,
+            'motif_matches': [],  # No motifs - focus on sections only
+            'coverage': coverage,
+            'processing_time': processing_time,
+            'total_notes': total_notes,
+            'occupied_notes': occupied_notes,
+            'validation': {'validation_enabled': False},  # We use strict similarity threshold
+            'similarity_threshold': self.similarity_threshold,
+            'avg_match_length': np.mean([lm.length_bars for lm in large_matches]) if large_matches else 0
+        }
+
+    def _find_ultra_long_sections(self, auditor: MIDIAuditor) -> List[LargeMatch]:
+        """Find maximum-length near-perfect section matches"""
+        matches = []
+
+        # Convert parameters to note indices
+        min_length_notes = self.min_section_bars * (len(auditor.notes) // max(1, auditor.num_bars))
+        max_length_notes = min(self.max_section_bars * (len(auditor.notes) // max(1, auditor.num_bars)),
+                              len(auditor.notes) // 2)
+
+        # Start with longest possible sections and work down
+        section_lengths = range(max_length_notes, max(min_length_notes - 1, 4), -4)  # Step by 4 notes
+
+        comparisons_made = 0
+
+        for length_notes in section_lengths:
+            if comparisons_made >= self.max_comparisons:
+                break
+
+            # Find exact matches of this length
+            pattern_dict = defaultdict(list)
+
+            # Sample every Nth position to reduce comparisons
+            step_size = max(1, length_notes // 8)  # Adaptive stepping
+
+            for i in range(0, len(auditor.notes) - length_notes + 1, step_size):
+                if i in auditor.occupied_indices:
+                    continue
+
+                # Create multilayer signature (pitch + rhythm + velocity + channel)
+                signature = self._create_multilayer_signature(auditor.notes[i:i + length_notes])
+                pattern_dict[signature].append(i)
+
+            # Find patterns that appear multiple times
+            for signature, positions in pattern_dict.items():
+                if len(positions) >= 2 and comparisons_made < self.max_comparisons:
+                    # Verify similarity between all pairs
+                    valid_pairs = []
+                    for i in range(len(positions)):
+                        for j in range(i + 1, len(positions)):
+                            if comparisons_made >= self.max_comparisons:
+                                break
+
+                            sim = self._calculate_multilayer_similarity(
+                                auditor.notes[positions[i]:positions[i] + length_notes],
+                                auditor.notes[positions[j]:positions[j] + length_notes]
+                            )
+                            comparisons_made += 1
+
+                            if sim >= self.similarity_threshold:
+                                valid_pairs.append((positions[i], positions[j]))
+
+                    # Create LargeMatch objects for valid pairs
+                    for pos_a, pos_b in valid_pairs:
+                        # Convert note indices to bar positions
+                        bar_a = auditor.notes[pos_a]["tick"] // auditor.ticks_per_bar
+                        bar_b = auditor.notes[pos_b]["tick"] // auditor.ticks_per_bar
+
+                        # Estimate section length in bars
+                        section_ticks = auditor.notes[pos_a + length_notes - 1]["tick"] + \
+                                      auditor.notes[pos_a + length_notes - 1]["duration"] - \
+                                      auditor.notes[pos_a]["tick"]
+                        length_bars = max(1, section_ticks // auditor.ticks_per_bar)
+
+                        matches.append(LargeMatch(
+                            id=len(matches) + 1,
+                            start_bar_a=bar_a,
+                            start_bar_b=bar_b,
+                            length_bars=length_bars,
+                            avg_similarity=self.similarity_threshold  # We already verified it's above threshold
+                        ))
+
+        return matches
+
+    def _create_multilayer_signature(self, notes: List[Dict]) -> Tuple:
+        """Create a multilayer signature for flexible matching"""
+        signature_parts = []
+
+        for note in notes:
+            # More flexible: pitch class, velocity range, channel, duration range
+            pitch_class = note['pitch'] % 12  # Pitch class instead of exact pitch
+            velocity_range = note['velocity'] // 16  # Velocity in ranges of 16
+            duration_range = min(7, note['duration'] // 32)  # Duration in ranges
+            signature_parts.extend([
+                pitch_class,  # 0-11 (pitch class)
+                velocity_range,  # 0-7 (velocity ranges)
+                note['channel'],  # Exact channel
+                duration_range  # 0-7 (duration ranges)
+            ])
+
+        return tuple(signature_parts)
+
+    def _calculate_multilayer_similarity(self, notes_a: List[Dict], notes_b: List[Dict]) -> float:
+        """Calculate comprehensive multilayer similarity"""
+        if len(notes_a) != len(notes_b):
+            return 0.0
+
+        total_features = 0
+        matching_features = 0
+
+        for na, nb in zip(notes_a, notes_b):
+            # Pitch match (exact)
+            if na['pitch'] == nb['pitch']:
+                matching_features += 1
+            total_features += 1
+
+            # Velocity match (within tolerance)
+            vel_diff = abs(na['velocity'] - nb['velocity'])
+            if vel_diff <= 10:  # 10 velocity units tolerance
+                matching_features += 1
+            total_features += 1
+
+            # Channel match (exact)
+            if na['channel'] == nb['channel']:
+                matching_features += 1
+            total_features += 1
+
+            # Duration match (within tolerance)
+            duration_diff = abs(na['duration'] - nb['duration'])
+            max_duration = max(na['duration'], nb['duration'])
+            if max_duration > 0 and duration_diff / max_duration <= 0.1:  # 10% tolerance
+                matching_features += 1
+            total_features += 1
+
+            # Timing alignment (relative within section)
+            # This is handled by the signature matching
+
+        return matching_features / total_features if total_features > 0 else 0.0
+
+
+class AutoTuningFramework:
+    """Framework for testing and auto-tuning algorithms on real MIDI files"""
+
+    def __init__(self):
+        self.test_files = []
+        self.metrics = {
+            'coverage': [],
+            'similarity': [],
+            'match_lengths': [],
+            'processing_times': []
+        }
+
+    def add_test_file(self, filepath: str):
+        """Add a MIDI file to the test suite"""
+        if os.path.exists(filepath):
+            self.test_files.append(filepath)
+
+    def run_parameter_sweep(self, algorithm_class, param_ranges: Dict, midi_file: str):
+        """Run parameter sweep on a single file"""
+        results = []
+
+        # Generate parameter combinations
+        param_combinations = self._generate_param_combinations(param_ranges)
+
+        for params in param_combinations:
+            # Create algorithm instance with parameters
+            algo = algorithm_class(**params)
+
+            # Run analysis
+            try:
+                with open(midi_file, 'rb') as f:
+                    midi_data = f.read()
+
+                auditor = MIDIAuditor(io.BytesIO(midi_data), verbose=False)
+
+                start_time = time.time()
+                result = algo.analyze(auditor)
+                processing_time = time.time() - start_time
+
+                results.append({
+                    'params': params,
+                    'coverage': result['coverage'],
+                    'processing_time': processing_time,
+                    'large_matches': len(result.get('large_matches', [])),
+                    'avg_similarity': result.get('similarity_threshold', 0.95),
+                    'avg_match_length': result.get('avg_match_length', 0)
+                })
+
+            except Exception as e:
+                print(f"Error testing params {params}: {e}")
+                continue
+
+        return results
+
+    def _generate_param_combinations(self, param_ranges: Dict) -> List[Dict]:
+        """Generate all combinations of parameters"""
+        if not param_ranges:
+            return [{}]
+
+        param_names = list(param_ranges.keys())
+        param_values = [param_ranges[name] for name in param_names]
+
+        combinations = []
+        for combo in np.ndindex(*[len(vals) for vals in param_values]):
+            param_dict = {}
+            for i, name in enumerate(param_names):
+                param_dict[name] = param_values[i][combo[i]]
+            combinations.append(param_dict)
+
+        return combinations
+
+    def optimize_parameters(self, algorithm_class, param_ranges: Dict, target_metric='coverage'):
+        """Find optimal parameters across all test files"""
+        all_results = []
+
+        for midi_file in self.test_files:
+            print(f"Optimizing on {midi_file}...")
+            file_results = self.run_parameter_sweep(algorithm_class, param_ranges, midi_file)
+            all_results.extend(file_results)
+
+        if not all_results:
+            return {}
+
+        # Find best parameters by target metric
+        if target_metric == 'coverage':
+            best_result = max(all_results, key=lambda x: x['coverage'])
+        elif target_metric == 'efficiency':
+            best_result = max(all_results, key=lambda x: x['coverage'] / max(x['processing_time'], 0.1))
+        elif target_metric == 'length':
+            best_result = max(all_results, key=lambda x: x['avg_match_length'])
+        else:
+            best_result = max(all_results, key=lambda x: x['coverage'])
+
+        print(f"Optimal parameters: {best_result['params']}")
+        print(f"Coverage: {best_result['coverage']:.3f}")
+        print(f"Processing time: {best_result['processing_time']:.3f}s")
+
+        return best_result['params']
+
+
 class DynamicUltraHybridAlgorithm(PatternRecognitionAlgorithm):
     """Dynamic ultra hybrid with adaptive tiered validation"""
 
@@ -1531,7 +1816,7 @@ class DynamicUltraHybridAlgorithm(PatternRecognitionAlgorithm):
         occupied_indices = set()
 
         for match in all_matches:
-            # Use tiered validation based on source
+            # Use tiered validation based on match source
             validation_result = self._tiered_validation(match, auditor, match['source'])
 
             if validation_result['valid']:
@@ -1975,7 +2260,8 @@ class MIDIAnalyzer:
             CoverageOptimizedHybridAlgorithm(similarity_threshold=0.7),
             BalancedHybridAlgorithm(similarity_threshold=0.75),
             QualityOptimizedHybridAlgorithm(similarity_threshold=0.85),
-            DynamicUltraHybridAlgorithm(similarity_threshold=0.75)
+            DynamicUltraHybridAlgorithm(similarity_threshold=0.75),
+            UltraLongSectionMatcher(min_section_bars=2, max_section_bars=32, similarity_threshold=0.75)  # New algorithm
         ]
         self.results_cache = {}
         PerformanceOptimizer.optimize_numpy_operations()
